@@ -1,0 +1,10 @@
+python -m pip install --upgrade pip ^
+&& python -m pip install pyinstaller streamlit openpyxl pandas reportlab ^
+&& rmdir /s /q build 2>nul ^
+&& rmdir /s /q dist 2>nul ^
+&& del /q Gestion_cuisine_centrale.spec 2>nul ^
+&& pyinstaller --noconfirm --onefile --name "Gestion_cuisine_centrale" ^
+   --add-data "assets;assets" ^
+   --add-data "templates;templates" ^
+   --add-data "src;src" ^
+   app.py
