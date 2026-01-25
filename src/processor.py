@@ -1317,70 +1317,63 @@ _SAUCE_QUALIFIERS = [
 
 
 def normalize_produit_for_grouping(produit: str) -> str:
-    """Normalize a dish/product name to a *base* name for grouping.
+    """
+    Normalisation métier des produits pour le bon de commande.
 
-    Example:
-      "macédoine vinaigrette" + "macédoine mayonnaise" -> "macédoine"
-      "Macédoine vinaigrette + Macédoine mayonnaise" -> "Macédoine"
+    Objectif:
+    - regrouper les variantes commerciales / rédactionnelles
+    - raisonner comme un fournisseur
 
-    Heuristics (kept intentionally simple & safe):
-    - Keep the left part before '+'
-    - Remove content in parentheses
-    - Remove trailing sauce/variant qualifiers (vinaigrette, mayonnaise, ...)
+    Exemples:
+    - "Compote pomme", "Compote de fruits SSA 100g" -> "Compote"
+    - "Yaourt nature", "Yaourt sucré" -> "Yaourt"
     """
     s = clean_text(produit)
     if not s:
         return ""
-    # Keep left side of explicit combinations
-    s = re.split(r"\s*\+\s*", s, maxsplit=1)[0].strip()
-    # Remove parentheses
-    s = re.sub(r"\([^)]*\)", "", s).strip()
 
     low = s.lower()
-    # remove 'sauce ...'
-    low = re.sub(r"\bsauce\b\s+.*$", "", low).strip()
-    # remove trailing known qualifiers
-    for q in _SAUCE_QUALIFIERS:
-        # remove if it appears as a whole word and is not the only word
-        if re.search(rf"\b{re.escape(q)}\b", low) and len(low.split()) > 1:
-            low = re.sub(rf"\b{re.escape(q)}\b.*$", "", low).strip()
-            break
 
-    # Rebuild with original casing approximated (title case for first char)
-    out = low
-    out = re.sub(r"\s+", " ", out).strip(" -;,:/")
-    if not out:
-        out = s
-    return out[:1].upper() + out[1:]
+    # --- RÈGLES MÉTIER PRIORITAIRES ---
+    if "compote" in low:
+        return "Compote"
+    if "yaourt" in low or "yogourt" in low:
+        return "Yaourt"
+    if "fromage blanc" in low:
+        return "Fromage blanc"
+    if "petit suisse" in low:
+        return "Petit suisse"
+    if "steak hach" in low:
+        return "Steak haché"
+    if "fruit" in low and "compote" not in low:
+        return "Fruit"
+
+    # --- FALLBACK GÉNÉRIQUE ---
+    s = re.split(r"\s*\+\s*", s, maxsplit=1)[0]
+    s = re.sub(r"\([^)]*\)", "", s)
+    s = re.sub(r"\bsauce\b.*$", "", s, flags=re.I)
+    s = re.sub(r"\s+", " ", s).strip(" -;,:/")
+
+    return s[:1].upper() + s[1:] if s else ""
 
 
-def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuItem]) -> pd.DataFrame:
-    """Build a production-friendly "bon de commande".
+def build_bon_commande(
+    planning: Dict[str, pd.DataFrame],
+    menu_items: List[MenuItem]
+) -> pd.DataFrame:
+    """
+    Bon de commande – version métier finale
 
-    Règles demandées:
-    - Pas de colonne "Régime".
-    - Colonnes attendues: Jour(s), Typologie, Produit, Effectif, Coefficient, Quantité.
-    - Les commandes doivent être regroupées par *produit de base* même sur des jours différents
-      (ex: "macédoine vinaigrette" + "macédoine mayonnaise" => "macédoine").
+    Colonnes :
+    - Jour(s)
+    - Repas
+    - Produit
+    - Effectif
+    - Coefficient
+    - Quantité
     """
 
-    def norm_reg(s: str) -> str:
-        s = (s or "").lower()
-        s = (
-            s.replace("é", "e")
-            .replace("è", "e")
-            .replace("ê", "e")
-            .replace("î", "i")
-            .replace("ï", "i")
-            .replace("ô", "o")
-            .replace("à", "a")
-            .replace("ç", "c")
-        )
-        s = re.sub(r"[^a-z0-9 ]+", " ", s)
-        s = re.sub(r"\s+", " ", s).strip()
-        return s
-
-    # ---- counts from planning: Repas + Jour + Regime ----
+    # ---- 1) EFFECTIFS depuis le planning (Jour + Repas) ----
     records = []
     for repas_key, repas_label in [("dejeuner", "Déjeuner"), ("diner", "Dîner")]:
         df = planning.get(repas_key)
@@ -1390,302 +1383,67 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
         df2 = df.copy()
         df2["Regime"] = df2["Regime"].apply(normalize_regime_label)
         agg = df2.groupby("Regime")[DAY_NAMES].sum(numeric_only=True)
+
         for jour in DAY_NAMES:
-            for regime, nb in agg[jour].items():
+            for _, nb in agg[jour].items():
                 records.append(
                     {
                         "Repas": repas_label,
                         "Jour": jour,
-                        "Regime_planning": regime,
-                        "reg_key_planning": norm_reg(regime),
-                        "Nb_personnes": int(_to_number(nb)),
+                        "Effectif": int(_to_number(nb)),
                     }
                 )
 
     counts = pd.DataFrame(records)
-    if counts.empty:
-        # still return menu with 0 pax
-        menu_df = pd.DataFrame(
-            [
-                {
-                    "Date": it.date,
-                    "Jour": DAY_NAMES[it.date.weekday()],
-                    "Repas": it.repas,
-                    "Typologie": it.categorie,
-                    "Produit": it.produit,
-                    "Effectif": 0,
-                    "Coefficient": 1.0,
-                }
-                for it in menu_items
-            ]
-        )
-        menu_df["Produit"] = menu_df["Produit"].astype(str)
-        menu_df["Produit_base"] = menu_df["Produit"].apply(normalize_produit_for_grouping)
-        menu_df["Quantité"] = (menu_df["Effectif"] * menu_df["Coefficient"]).astype(int)
-        grouped = (
-            menu_df.groupby(["Repas", "Typologie", "Produit_base", "Coefficient"], as_index=False)
-            .agg(
-                {
-                    "Jour": lambda s: ", ".join(sorted(set(s), key=lambda x: DAY_NAMES.index(x))),
-                    "Produit": "first",
-                    "Effectif": "sum",
-                    "Quantité": "sum",
-                }
-            )
-            .rename(columns={"Jour": "Jour(s)", "Produit_base": "Produit"})
-        )
-        return grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Effectif", "Coefficient", "Quantité"]].sort_values(
-            ["Repas", "Typologie", "Produit"]
-        ).reset_index(drop=True)
 
-    planning_keys = counts[["Regime_planning", "reg_key_planning"]].drop_duplicates().to_dict("records")
-
-    def best_match_planning_key(menu_key: str) -> Optional[str]:
-        """Return reg_key_planning that best matches menu_key."""
-        if not menu_key:
-            return None
-        mtoks = set(menu_key.split())
-        best_key = None
-        best_score = -1
-        for rec in planning_keys:
-            ptoks = set((rec["reg_key_planning"] or "").split())
-            score = len(mtoks & ptoks)
-            if score > best_score:
-                best_score = score
-                best_key = rec["reg_key_planning"]
-        if best_score <= 0:
-            return None
-        return best_key
-
-    # ---- menu df ----
+    # ---- 2) MENU ----
     menu_df = pd.DataFrame(
         [
             {
                 "Date": it.date,
                 "Jour": DAY_NAMES[it.date.weekday()],
                 "Repas": it.repas,
-                "Categorie": it.categorie,
-                "Regime_menu": it.regime,
-                "reg_key_menu": norm_reg(it.regime),
                 "Produit": it.produit,
             }
             for it in menu_items
         ]
     )
 
-    # Map menu -> planning key, then merge on that key
-    menu_df["reg_key_planning"] = menu_df["reg_key_menu"].apply(best_match_planning_key)
-
+    # ---- 3) Jointure menu × effectifs ----
     merged = menu_df.merge(
-        counts[["Repas", "Jour", "reg_key_planning", "Nb_personnes", "Regime_planning"]],
-        on=["Repas", "Jour", "reg_key_planning"],
+        counts,
+        on=["Repas", "Jour"],
         how="left",
     )
 
-    merged["Nb_personnes"] = merged["Nb_personnes"].fillna(0).astype(int)
+    merged["Effectif"] = merged["Effectif"].fillna(0).astype(int)
     merged["Coefficient"] = 1.0
 
-    # We keep the menu label as "Regime" (what the user sees), but you could also keep planning regime.
-    base = merged[
-        ["Date", "Jour", "Repas", "Categorie", "Produit", "Nb_personnes", "Coefficient"]
-    ].rename(
-        columns={"Categorie": "Typologie", "Nb_personnes": "Effectif"}
-    )
+    merged["Produit"] = merged["Produit"].astype(str)
+    merged["Produit_base"] = merged["Produit"].apply(normalize_produit_for_grouping)
+    merged["Quantité"] = (merged["Effectif"] * merged["Coefficient"]).round().astype(int)
 
-    base["Produit"] = base["Produit"].astype(str)
-    base["Produit_base"] = base["Produit"].apply(normalize_produit_for_grouping)
-    base["Quantité"] = (base["Effectif"] * base["Coefficient"]).round().astype(int)
-
-    # Group across days (and across regimes implicitly)
+    # ---- 4) REGROUPEMENT FINAL (SANS TYPOLOGIE) ----
     grouped = (
-        base.groupby(["Repas", "Typologie", "Produit_base", "Coefficient"], as_index=False)
+        merged.groupby(
+            ["Repas", "Produit_base", "Coefficient"],
+            as_index=False
+        )
         .agg(
             {
-                "Jour": lambda s: ", ".join(sorted(set(s), key=lambda x: DAY_NAMES.index(x))),
+                "Jour": lambda s: ", ".join(
+                    sorted(set(s), key=lambda x: DAY_NAMES.index(x))
+                ),
                 "Effectif": "sum",
                 "Quantité": "sum",
             }
         )
-        .rename(columns={"Jour": "Jour(s)", "Produit_base": "Produit"})
+        .rename(columns={
+            "Jour": "Jour(s)",
+            "Produit_base": "Produit"
+        })
     )
 
-    grouped = grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Effectif", "Coefficient", "Quantité"]]
-    return grouped.sort_values(["Repas", "Typologie", "Produit"]).reset_index(drop=True)
-
-
-def export_excel(
-    bon_commande: pd.DataFrame,
-    prod_dej: pd.DataFrame,
-    prod_din: pd.DataFrame,
-    out_path: str,
-) -> None:
-    """Export the deliverables into one Excel file with 3 sheets.
-
-    Objectif: conserver une bonne lisibilité (mise en forme basique type "table"):
-    - En-têtes en gras, fond gris clair
-    - Bordures fines, retour à la ligne, gel de la 1ère ligne
-    - Auto-filter + ajustement des largeurs de colonnes
-    """
-    with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-        bon_commande.to_excel(writer, sheet_name="Bon de commande", index=False)
-
-        def _pivot_prod(long_df: pd.DataFrame) -> pd.DataFrame:
-            if long_df is None or long_df.empty:
-                return pd.DataFrame(columns=["Regime"] + DAY_NAMES + ["Total semaine"])
-            df = long_df.copy()
-            # normalise colonnes attendues
-            if "Nb" not in df.columns:
-                # fallback si autre nom
-                for cand in ["Nb_personnes", "Nombre", "Quantite"]:
-                    if cand in df.columns:
-                        df = df.rename(columns={cand: "Nb"})
-                        break
-            # pivot
-            piv = df.pivot_table(index="Regime", columns="Jour", values="Nb", aggfunc="sum", fill_value=0)
-            # assure colonnes jours
-            for d in DAY_NAMES:
-                if d not in piv.columns:
-                    piv[d] = 0
-            piv = piv[DAY_NAMES]
-            piv["Total semaine"] = piv.sum(axis=1)
-            piv = piv[piv["Total semaine"] > 0]
-            piv = piv.reset_index()
-            # ligne total jour
-            total_row = pd.DataFrame([["TOTAL JOUR"] + [int(piv[d].sum()) for d in DAY_NAMES] + [int(piv["Total semaine"].sum())]], columns=["Regime"] + DAY_NAMES + ["Total semaine"])
-            out = pd.concat([piv, total_row], ignore_index=True)
-            return out
-
-        dej_piv = _pivot_prod(prod_dej)
-        din_piv = _pivot_prod(prod_din)
-
-        dej_piv.to_excel(writer, sheet_name="Déjeuner", index=False)
-        din_piv.to_excel(writer, sheet_name="Dîner", index=False)
-
-        wb = writer.book
-	
-        ws_bc = wb["Bon de commande"]
-
-        # repérage des colonnes par leur nom (robuste à l'ordre)
-        headers = {}
-        for c in range(1, ws_bc.max_column + 1):
-            v = ws_bc.cell(row=1, column=c).value
-            if v:
-                headers[str(v).strip().lower()] = c
-
-        col_eff = headers.get("effectif")
-        col_coef = headers.get("coefficient")
-        col_qty = headers.get("quantité") or headers.get("quantite")
-
-        if col_eff and col_coef and col_qty:
-            eff_letter = openpyxl.utils.get_column_letter(col_eff)
-            coef_letter = openpyxl.utils.get_column_letter(col_coef)
-
-            for r in range(2, ws_bc.max_row + 1):
-                ws_bc.cell(
-                    row=r,
-                    column=col_qty
-                ).value = f"=ROUND({eff_letter}{r}*{coef_letter}{r},0)"
-
-
-        thin = Side(style="thin", color="9E9E9E")
-        border = Border(left=thin, right=thin, top=thin, bottom=thin)
-        header_fill = PatternFill("solid", fgColor="EDEDED")
-        header_font = Font(bold=True)
-        header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        cell_align = Alignment(horizontal="left", vertical="top", wrap_text=True)
-        cell_align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        band_fill = PatternFill("solid", fgColor="F7F7F7")
-
-        for name in ["Bon de commande", "Déjeuner", "Dîner"]:
-            ws = wb[name]
-
-            header_row = 1
-            if name in ("Déjeuner", "Dîner"):
-                ws.insert_rows(1)
-                max_col_tmp = ws.max_column
-                ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col_tmp)
-                tcell = ws.cell(row=1, column=1)
-                tcell.value = f"BON DE COMMANDE – {name.upper()}"
-                tcell.font = Font(bold=True, size=14)
-                tcell.alignment = Alignment(horizontal="center", vertical="center")
-                ws.row_dimensions[1].height = 28
-                header_row = 2
-                ws.freeze_panes = "B3"
-                ws.page_setup.orientation = "landscape"
-            else:
-                ws.freeze_panes = "A2"
-
-            # Apply styles + borders
-            max_row = ws.max_row
-            max_col = ws.max_column
-
-            # Header row
-            for c in range(1, max_col + 1):
-                cell = ws.cell(row=header_row, column=c)
-                cell.font = header_font
-                cell.fill = header_fill
-                cell.alignment = header_align
-                cell.border = border
-
-            ws.row_dimensions[header_row].height = 24
-
-            # Body
-            for r in range(header_row + 1, max_row + 1):
-                ws.row_dimensions[r].height = 18
-                for c in range(1, max_col + 1):
-                    cell = ws.cell(row=r, column=c)
-                    # Pivot sheets: numeric columns centered
-                    if name in ("Déjeuner", "Dîner") and c >= 2:
-                        cell.alignment = cell_align_center
-                    else:
-                        cell.alignment = cell_align
-                    cell.border = border
-
-                # Banded rows for readability
-                if r % 2 == 0:
-                    for c in range(1, max_col + 1):
-                        ws.cell(row=r, column=c).fill = band_fill
-
-            # Emphasize first column and TOTAL row for pivot sheets
-            if name in ("Déjeuner", "Dîner"):
-                for r in range(header_row + 1, max_row + 1):
-                    ws.cell(row=r, column=1).font = Font(bold=True)
-                # TOTAL row (last row)
-                if max_row >= 2 and str(ws.cell(row=max_row, column=1).value).strip().upper() == "TOTAL":
-                    for c in range(1, max_col + 1):
-                        ws.cell(row=max_row, column=c).font = Font(bold=True)
-                        ws.cell(row=max_row, column=c).fill = PatternFill("solid", fgColor="E0E0E0")
-
-            # Auto-filter
-            ws.auto_filter.ref = f"A{header_row}:{openpyxl.utils.get_column_letter(max_col)}{max_row}"
-
-            # Column widths (after styling)
-            # IMPORTANT: after we add a merged title row (Déjeuner/Dîner),
-            # the first row contains MergedCell objects in columns > A.
-            # Those cells don't always expose `column_letter`, so we compute
-            # the column letter from the index instead.
-            for c_idx in range(1, max_col + 1):
-                col_letter = openpyxl.utils.get_column_letter(c_idx)
-                max_len = 0
-                # Use a bounded scan for performance
-                for r_idx in range(1, min(max_row, 400) + 1):
-                    cell = ws.cell(row=r_idx, column=c_idx)
-                    if cell.value is None:
-                        continue
-                    max_len = max(max_len, len(str(cell.value)))
-                # keep sheets readable
-                ws.column_dimensions[col_letter].width = min(max(max_len + 2, 10), 60)
-
-            # Tighter, consistent widths for pivot sheets
-            if name in ("Déjeuner", "Dîner"):
-                # Regime column
-                ws.column_dimensions["A"].width = 34
-                # Day columns
-                for idx, day in enumerate(DAY_NAMES, start=2):
-                    ws.column_dimensions[openpyxl.utils.get_column_letter(idx)].width = 12
-                # Total column
-                ws.column_dimensions[openpyxl.utils.get_column_letter(2 + len(DAY_NAMES))].width = 12
-
-            # Page setup (simple)
-            ws.page_setup.fitToWidth = 1
-            ws.page_setup.fitToHeight = 0
+    return grouped[
+        ["Jour(s)", "Repas", "Produit", "Effectif", "Coefficient", "Quantité"]
+    ].sort_values(["Repas", "Produit"]).reset_index(drop=True)
