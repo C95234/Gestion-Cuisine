@@ -560,24 +560,82 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
     regime_by_col: Dict[int, str] = {}
     for c in range(2, ws.max_column + 1):
         h = header.get(c, "")
-        if not h:
-            continue
         g = group.get(c, "")
-        if g and g.upper() not in h.upper():
+        # Certains fichiers ont "HYPOCALORIQUE" en ligne 2 (groupe) mais un header vide.
+        if not h and not g:
+            continue
+
+        if not h:
+            label = g
+        elif not g:
+            label = h
+        elif g and g.upper() not in h.upper():
             label = f"{g} - {h}"
         else:
             label = h
+
         label = label.replace("STANDART", "STANDARD")
         label = re.sub(r"\s+", " ", label).strip()
         regime_by_col[c] = label
 
     items: List[MenuItem] = []
 
-    def read_block(start_row: int, date_val: dt.date, repas: str):
+    def _norm_kw(s: str) -> str:
+        s = clean_text(s).lower()
+        s = "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
+        return s
+
+    _DESSERT_KW = ("compote", "fruit", "gateau", "gateau", "tarte", "flan", "creme", "crème", "mousse", "riz au lait", "ile flottante")
+    _DAIRY_KW = ("fromage", "yaourt", "yogourt", "fromage blanc", "petit suisse", "camembert", "emmental", "kiri", "tartare", "babybel", "gouda", "boursin")
+
+    def _row_score(row: int, kws: tuple[str, ...]) -> int:
+        score = 0
+        for c in regime_by_col.keys():
+            v = clean_text(ws.cell(row, c).value)
+            if not v:
+                continue
+            t = _norm_kw(v)
+            if any(k in t for k in kws):
+                score += 1
+        return score
+
+    def detect_block_height(start_row: int) -> int:
+        """Détermine si un bloc repas fait 5 lignes (1 entrée, 2 plats, 1 laitage, 1 dessert)
+        ou 6 lignes (1 entrée, 3 lignes de plat/garniture, 1 laitage, 1 dessert).
+
+        Objectif: éviter les décalages quand certaines journées n'ont que 2 lignes de plat.
+        """
+        # candidates: (height, laitage_row_offset, dessert_row_offset)
+        candidates = [
+            (6, 4, 5),
+            (5, 3, 4),
+        ]
+        best_h = 6
+        best_score = -1
+        for h, off_lait, off_des in candidates:
+            laitage_row = start_row + off_lait
+            dessert_row = start_row + off_des
+            if dessert_row > ws.max_row:
+                continue
+            score = _row_score(laitage_row, _DAIRY_KW) + _row_score(dessert_row, _DESSERT_KW)
+            # bonus si la ligne dessert ressemble vraiment à un dessert dans au moins 1 colonne
+            if _row_score(dessert_row, _DESSERT_KW) > 0:
+                score += 2
+            if score > best_score:
+                best_score = score
+                best_h = h
+        return best_h
+
+    def read_block(start_row: int, date_val: dt.date, repas: str, block_height: int):
         entree_row = start_row
-        plat_rows = [start_row + 1, start_row + 2, start_row + 3]
-        laitage_row = start_row + 4
-        dessert_row = start_row + 5
+        if block_height == 5:
+            plat_rows = [start_row + 1, start_row + 2]
+            laitage_row = start_row + 3
+            dessert_row = start_row + 4
+        else:
+            plat_rows = [start_row + 1, start_row + 2, start_row + 3]
+            laitage_row = start_row + 4
+            dessert_row = start_row + 5
 
         for c, regime in regime_by_col.items():
             entree = clean_text(ws.cell(entree_row, c).value)
@@ -615,8 +673,14 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
         uniq.append((rr, dd))
 
     for rr, dd in uniq:
-        read_block(rr, dd, "Déjeuner")
-        read_block(rr + 6, dd, "Dîner")
+        h_dej = detect_block_height(rr)
+        read_block(rr, dd, "Déjeuner", h_dej)
+
+        rr_din = rr + h_dej
+        # si le dîner dépasse la feuille, on ignore
+        if rr_din <= ws.max_row:
+            h_din = detect_block_height(rr_din)
+            read_block(rr_din, dd, "Dîner", h_din)
 
     return items
 

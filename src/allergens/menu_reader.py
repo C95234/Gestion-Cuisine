@@ -89,7 +89,17 @@ def _find_header_row_and_cols(ws: Worksheet) -> tuple[int, dict[str, int]]:
     best_score = -1
 
     for r in range(1, min(ws.max_row, 200) + 1):
-        row_vals = [norm(_merged_value(ws, r, c)) for c in range(1, min(ws.max_column, 50) + 1)]
+        row_vals = []
+        for c in range(1, min(ws.max_column, 50) + 1):
+            v = norm(_merged_value(ws, r, c))
+            vg = norm(_merged_value(ws, r - 1, c)) if r > 1 else ""
+            # Certains fichiers mettent des regroupements (ex: HYPOCALORIQUE, MENU STANDARD) sur la ligne au-dessus.
+            if not v and vg:
+                v = vg
+            elif v and vg and vg not in v:
+                v = (vg + " " + v).strip()
+            row_vals.append(v)
+
         joined = " ".join(v for v in row_vals if v)
 
         if "viande" not in joined or "vegetar" not in joined:
@@ -171,12 +181,12 @@ def _norm2(s: str) -> str:
 
 _DESSERT_KW = (
     "compote", "fruit", "gateau", "gâteau", "tarte", "flan",
-    "crème", "creme", "mousse", "riz au lait", "éclair", "eclair"
+    "mousse", "riz au lait", "éclair", "eclair"
 )
 
 _DAIRY_KW = (
     "fromage", "yaourt", "yogourt", "fromage blanc", "tomme",
-    "camembert", "emmental", "kiri", "tartare", "babybel"
+    "camembert", "emmental", "kiri", "tartare", "babybel", "gouda", "boursin", "coulomiers", "petit suisse", "brie", "comte"
 )
 
 _ENTREE_KW = (
@@ -243,17 +253,54 @@ def read_menus(excel_path: str) -> dict[date, dict[str, dict[str, dict[str, str]
         er = starts[i + 1][0] - 1 if i + 1 < len(starts) else ws.max_row
         day_menu = {}
 
+        # --- Détection de la séparation Déjeuner / Dîner ---
+        # On évite le découpage "moitié-moitié" qui casse dès qu'il y a une ligne de plat en moins/plus.
+        def _row_texts(r: int) -> list[str]:
+            texts = []
+            for c in cols.values():
+                v = _clean_cell(_merged_value(ws, r, c))
+                if v:
+                    texts.append(v)
+            return texts
+
+        best_split = None
+        best_score = -1
+        for r in range(sr, er):
+            above = _row_texts(r)
+            below = _row_texts(r + 1)
+            if not above or not below:
+                continue
+            dessert_score = sum(1 for t in above if _is_dessert(t))
+            entree_score = sum(1 for t in below if _looks_like_entree(t))
+            dairy_score = sum(1 for t in above if _is_dairy(t))
+            score = dessert_score * 3 + entree_score * 3 + dairy_score
+            if score > best_score:
+                best_score = score
+                best_split = r
+
+        # fallback sûr
+        if best_split is None:
+            best_split = sr + max(0, (er - sr) // 2)
+
+        dej_range = range(sr, best_split + 1)
+        din_range = range(best_split + 1, er + 1)
+
+
         for reg, col in cols.items():
-            cells = [
+            cells_dej = [
                 _clean_cell(_merged_value(ws, r, col))
-                for r in range(sr, er + 1)
+                for r in dej_range
+                if _clean_cell(_merged_value(ws, r, col))
+            ]
+            cells_din = [
+                _clean_cell(_merged_value(ws, r, col))
+                for r in din_range
                 if _clean_cell(_merged_value(ws, r, col))
             ]
 
-            mid = len(cells) // 2
             day_menu[reg] = {
-                SERVICE_DEJ: _build_service_positional(cells[:mid], SERVICE_DEJ, reg == REG_VEGETALIEN),
-                SERVICE_DIN: _build_service_positional(cells[mid:], SERVICE_DIN, reg == REG_VEGETALIEN),
+                SERVICE_DEJ: _build_service_positional(cells_dej, SERVICE_DEJ, reg == REG_VEGETALIEN),
+                SERVICE_DIN: _build_service_positional(cells_din, SERVICE_DIN, reg == REG_VEGETALIEN),
             }
 
         menus[d] = day_menu
