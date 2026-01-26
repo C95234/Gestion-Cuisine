@@ -78,27 +78,8 @@ def planning_to_daily_totals(
     """
     def _one(df: pd.DataFrame) -> pd.DataFrame:
         if df is None or df.empty:
-            # IMPORTANT: keep the exact day columns **once** (no duplicates).
-            # Duplicated names (e.g. "Jeudi" twice) silently double-count when we melt/pivot.
-            return pd.DataFrame(
-                columns=[
-                    "Site",
-                    "Regime",
-                    "Lundi",
-                    "Mardi",
-                    "Mercredi",
-                    "Jeudi",
-                    "Vendredi",
-                    "Samedi",
-                    "Dimanche",
-                ]
-            )
-
-        out = df.copy()
-        # Safety: if an uploaded sheet contains duplicated day columns, keep the first occurrence.
-        # (This avoids billing over-counts without changing the expected input format.)
-        out = out.loc[:, ~out.columns.duplicated()].copy()
-        return out
+            return pd.DataFrame(columns=["Site", "Regime", "Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"])
+        return df.copy()
 
     dej = _one(dej)
     din = _one(din)
@@ -271,17 +252,35 @@ def export_monthly_workbook(
     records = records.copy()
     records["date"] = pd.to_datetime(records["date"]).dt.date
 
+    # Normalize site names (ex: "Internat 24 ter" + "Internat 24 simple" -> "Internat")
+    def _norm_site_name(s: str) -> str:
+        s0 = str(s).strip()
+        sN = _norm(s0)
+        if "internat" in sN:
+            return "Internat"
+        return s0
+    if "site" in records.columns:
+        records["site"] = records["site"].map(_norm_site_name)
+
     # Months present
     records["year"] = records["date"].map(lambda d: d.year)
     records["month"] = records["date"].map(lambda d: d.month)
-    months = sorted({(y, m) for y, m in zip(records["year"], records["month"])})
+
+    # Export a full year (Janvier -> Décembre). We pick the most recent year found in records.
+    export_year = int(records["year"].max())
+
+    # Keep a stable set of sites across the year (so columns don't change month to month)
+    year_records = records[records["year"] == export_year]
+    sites = sorted(year_records["site"].dropna().unique().tolist(), key=lambda s: str(s).upper())
 
     wb = openpyxl.Workbook()
     # remove default sheet
     wb.remove(wb.active)
 
-    for (y, m) in months:
-        sheet_name = f"{y}-{m:02d}"
+    fr_months = {i+1: name for i, name in enumerate(['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'])}
+    for m in range(1, 13):
+        y = export_year
+        sheet_name = f"{fr_months[m]} {y}"
         ws = wb.create_sheet(sheet_name)
 
         month_start = dt.date(y, m, 1)
@@ -291,11 +290,10 @@ def export_monthly_workbook(
         else:
             month_end = dt.date(y, m+1, 1) - dt.timedelta(days=1)
 
-        # Determine sites for this month
-        sub = records[(records["year"] == y) & (records["month"] == m)]
-        sites = sorted(sub["site"].dropna().unique().tolist(), key=lambda s: s.upper())
+        # Month slice (sites are kept stable across the year)
+        sub = records[(records["year"] == y) & (records["month"] == m)].copy()
 
-        # Build two blocks
+# Build two blocks
         r = 1
         r = _write_month_block(ws, r, "Repas", "repas", sub, sites, month_start, month_end, custom_prices=custom_prices)
         r += 2
@@ -307,9 +305,8 @@ def export_monthly_workbook(
             ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = 14
         ws.column_dimensions[openpyxl.utils.get_column_letter(len(sites)+2)].width = 12
 
-        # Freeze panes at first data row after headers for readability.
-        # Our first block starts at row 1 and data begins at row 4.
-        ws.freeze_panes = "B4"
+        # Freeze panes at first data row after headers for readability
+        ws.freeze_panes = "B5"
 
     wb.save(out_path)
     return out_path
@@ -357,7 +354,7 @@ def _write_month_block(
     ws.cell(start_row, 1, title)
     _style_header_cell(ws.cell(start_row, 1))
     for i, site in enumerate(sites, start=2):
-        c = ws.cell(start_row, i, _unit_price(category, site, custom_prices))
+        c = ws.cell(start_row, i, "")
         _style_header_cell(c)
         c.number_format = "0.00"
     ws.cell(start_row, total_col, month_start)
