@@ -236,9 +236,13 @@ def export_monthly_workbook(
     custom_prices: Optional[dict] = None,
 ) -> str:
     """
-    Create an Excel workbook with 1 sheet per month found in records.
-    Each sheet contains 2 blocks: Repas (sans PDJ / sans M&L) and Mixé/Lissé.
-    Layout inspired by your monthly ODS template.
+    Create an Excel workbook for billing.
+
+    The workbook always contains **12 sheets (Janvier → Décembre)** for a single year.
+    The exported year is the most recent year found in ``records``.
+
+    Each month sheet contains 2 blocks: Repas and Mixé/Lissé.
+    Layout is aligned with your monthly template (unit prices on the first row).
     """
     if records is None or records.empty:
         wb = openpyxl.Workbook()
@@ -277,10 +281,10 @@ def export_monthly_workbook(
     # remove default sheet
     wb.remove(wb.active)
 
-    fr_months = {i+1: name for i, name in enumerate(['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'])}
     for m in range(1, 13):
         y = export_year
-        sheet_name = f"{fr_months[m]} {y}"
+        # Keep the same naming convention as the UI selector (YYYY-MM)
+        sheet_name = f"{y}-{m:02d}"
         ws = wb.create_sheet(sheet_name)
 
         month_start = dt.date(y, m, 1)
@@ -305,8 +309,8 @@ def export_monthly_workbook(
             ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = 14
         ws.column_dimensions[openpyxl.utils.get_column_letter(len(sites)+2)].width = 12
 
-        # Freeze panes at first data row after headers for readability
-        ws.freeze_panes = "B5"
+        # Freeze panes at first day row (keeps headers + day column visible)
+        ws.freeze_panes = "B4"
 
     wb.save(out_path)
     return out_path
@@ -354,7 +358,8 @@ def _write_month_block(
     ws.cell(start_row, 1, title)
     _style_header_cell(ws.cell(start_row, 1))
     for i, site in enumerate(sites, start=2):
-        c = ws.cell(start_row, i, "")
+        # Unit price per site (keeps the same structure as your existing workbook)
+        c = ws.cell(start_row, i, _unit_price(category, site, custom_prices))
         _style_header_cell(c)
         c.number_format = "0.00"
     ws.cell(start_row, total_col, month_start)
