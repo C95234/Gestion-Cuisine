@@ -1,9 +1,0 @@
-py -m venv venv
-
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
-. .\venv\Scripts\Activate.ps1
-
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-
-python -m streamlit run app.py

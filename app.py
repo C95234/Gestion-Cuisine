@@ -117,8 +117,8 @@ try:
     planning_path = _save_uploaded_file(planning_file, suffix=".xlsx")
     menu_path = _save_uploaded_file(menu_file, suffix=".xlsx")
 
-    # ✅ Parse planning (cloud-safe : on passe par un vrai chemin)
-    planning = parse_planning_fabrication(planning_path)
+    # Parse planning (openpyxl accepte aussi un file-like ; on garde ton comportement)
+    planning = parse_planning_fabrication(planning_file)
 
     # Optionnel : feuille mixé/lissé (si présente)
     mix_planning = {"dejeuner": pd.DataFrame(), "diner": pd.DataFrame()}
@@ -328,7 +328,7 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
 
-      # ==============================
+    # ==============================
     # Allergènes
     # ==============================
     with tab_all:
@@ -344,7 +344,6 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
         # CLOUD-SAFE : on évite de dépendre d'un fichier local persistant.
         # On passe par upload / download du référentiel maître.
         c1, c2 = st.columns([2, 1])
-
         with c1:
             st.markdown("### 0) Référentiel maître (obligatoire)")
             master_upload = st.file_uploader(
@@ -367,7 +366,7 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                 "- Le logiciel met à jour le référentiel maître en faisant un **OR** (si un X existe, il reste).\n"
             )
 
-            if st.button("📚 Apprendre depuis ce classeur", type="primary", key="btn_learn_allergens"):
+            if st.button("📚 Apprendre depuis ce classeur", type="primary"):
                 if not master_upload:
                     st.error("Upload d'abord le référentiel maître (.xlsx).")
                 elif not filled_allergen_wb:
@@ -388,33 +387,20 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                             data=f,
                             file_name="referentiel_allergenes_maitre.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key="dl_master_updated",
                         )
 
         with c2:
             st.markdown("### Templates allergènes")
-            ok_dej = (template_dir / "template_dejeuner.xlsx").exists()
-            ok_din = (template_dir / "template_diner.xlsx").exists()
-
-            if ok_dej and ok_din:
-                st.success("Templates présents (déjeuner + dîner)")
+            if (template_dir / "template_dejeuner.xlsx").exists():
+                st.success("Templates présents")
             else:
-                missing = []
-                if not ok_dej:
-                    missing.append("template_dejeuner.xlsx")
-                if not ok_din:
-                    missing.append("template_diner.xlsx")
-                st.error("Templates allergènes manquants: " + ", ".join(missing))
-            st.caption("Ils doivent être présents dans ton repo GitHub (templates/allergen).")
+                st.error("Templates allergènes manquants (templates/allergen).")
+            st.caption("Ils doivent être présents dans ton repo GitHub.")
 
         st.divider()
         st.markdown("### 2) Générer les tableaux allergènes")
-
-        if st.button("📄 Générer tableaux allergènes (Excel)", type="primary", key="btn_generate_allergens"):
-            ok_dej = (template_dir / "template_dejeuner.xlsx").exists()
-            ok_din = (template_dir / "template_diner.xlsx").exists()
-
-            if not (ok_dej and ok_din):
+        if st.button("📄 Générer tableaux allergènes (Excel)", type="primary"):
+            if not (template_dir / "template_dejeuner.xlsx").exists():
                 st.error("Templates allergènes manquants (templates/allergen).")
             elif not master_upload:
                 st.error("Upload d'abord le référentiel maître (colonne de gauche).")
@@ -423,7 +409,7 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                 out_all = _temp_out_path(".xlsx")
 
                 out_xlsx, missing = generate_allergen_workbook(
-                    menu_excel_path=menu_path,               # menu_path défini plus haut dans le try
+                    menu_excel_path=menu_path,
                     allergen_ref_path=str(tmp_master),
                     out_xlsx_path=out_all,
                     template_dir=str(template_dir),
@@ -443,7 +429,6 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                         data=f,
                         file_name="Tableaux_allergenes.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="dl_allergen_tables",
                     )
 
 except Exception:

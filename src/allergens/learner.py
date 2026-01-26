@@ -1,7 +1,8 @@
+
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, Set, List
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -11,27 +12,22 @@ from .utils import normalize_key, normalize_space
 
 ALLERGEN_LETTERS = list("CDEFGHIJKLMNOPQR")  # C -> R
 
-
 def _truthy(v) -> bool:
     s = normalize_space(str(v or "")).strip().lower()
     return s in ("x", "1", "oui", "vrai", "true", "yes")
 
-
-# ----------------------------------------------------------------------
-# EXTRACTION depuis un classeur rempli
-# ----------------------------------------------------------------------
 def extract_reference_from_filled_allergen_workbook(filled_path: str) -> pd.DataFrame:
-    """Extrait un référentiel (Plat + colonnes allergènes) depuis un classeur 'Allergène ...' rempli."""
+    """Extrait un référentiel (Plat + colonnes allergènes) depuis un classeur 'Allergène ...' rempli (avec des X)."""
     wb = load_workbook(filled_path, data_only=True)
     rows: List[Dict[str, object]] = []
 
     for ws in wb.worksheets:
+        # zone plats : B4:B27, allergènes : C4:R27
         for r in range(4, 28):
             dish = normalize_space(str(ws[f"B{r}"].value or "")).strip()
             if not dish or dish == "—":
                 continue
-
-            rec = {"Plat": dish}
+            rec: Dict[str, object] = {"Plat": dish}
             for i, a in enumerate(ALLERGEN_COLUMNS):
                 col = ALLERGEN_LETTERS[i]
                 rec[a] = "X" if _truthy(ws[f"{col}{r}"].value) else ""
@@ -41,226 +37,135 @@ def extract_reference_from_filled_allergen_workbook(filled_path: str) -> pd.Data
         return pd.DataFrame(columns=["Plat"] + ALLERGEN_COLUMNS)
 
     df = pd.DataFrame(rows)
+    # dédoublonne par plat normalisé, OR sur allergènes
     df["__k"] = df["Plat"].apply(normalize_key)
-
-    out = (
-        df.groupby("__k", as_index=False)
-        .agg({a: "max" for a in ALLERGEN_COLUMNS})
-    )
-    out["Plat"] = df.groupby("__k")["Plat"].first().values
-
+    agg = []
+    for k, g in df.groupby("__k", dropna=False):
+        if not k:
+            continue
+        base = {"Plat": g.iloc[0]["Plat"]}
+        for a in ALLERGEN_COLUMNS:
+            base[a] = "X" if any(_truthy(x) for x in g[a].tolist()) else ""
+        agg.append(base)
+    out = pd.DataFrame(agg)
     return out[["Plat"] + ALLERGEN_COLUMNS]
 
 
-# ----------------------------------------------------------------------
-# LECTURE ROBUSTE DU RÉFÉRENTIEL MAÎTRE (TON FORMAT)
-# ----------------------------------------------------------------------
-def _read_master_reference_xlsx(path: str) -> pd.DataFrame:
-    """
-    Lit le référentiel maître au format généré par write_reference_workbook():
-    - titre en ligne 1
-    - en-têtes en ligne 3
-    - plats en colonne B (B3 parfois vide dans l'ancien writer)
-    - allergènes en colonnes C..R
-    """
-    wb = load_workbook(path, data_only=True)
-
-    # On cherche la feuille "Référence" sinon la 1ère
-    ws = wb["Référence"] if "Référence" in wb.sheetnames else wb.worksheets[0]
-
-    # En-tête en ligne 3
-    header_row = 3
-
-    # Colonnes: Plat en B, allergènes en C.. selon ALLERGEN_LETTERS
-    # On lit jusqu'à un maximum raisonnable (évite d’embarquer 5000 lignes vides)
-    rows: List[Dict[str, object]] = []
-    max_scan = min(ws.max_row, 2000)
-
-    for r in range(header_row + 1, max_scan + 1):
-        dish = normalize_space(str(ws[f"B{r}"].value or "")).strip()
-        if not dish:
-            continue
-
-        rec: Dict[str, object] = {"Plat": dish}
-        for i, a in enumerate(ALLERGEN_COLUMNS):
-            col = ALLERGEN_LETTERS[i]  # C..R
-            rec[a] = "X" if _truthy(ws[f"{col}{r}"].value) else ""
-        rows.append(rec)
-
-    if not rows:
-        return pd.DataFrame(columns=["Plat"] + ALLERGEN_COLUMNS)
-
-    df = pd.DataFrame(rows)
-    return _sanitize_reference_df(df)
-
-
-def _sanitize_reference_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Assure la présence de Plat + colonnes allergènes et normalise les colonnes."""
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["Plat"] + ALLERGEN_COLUMNS)
-
-    df2 = df.copy()
-    df2.columns = [normalize_space(str(c or "")).strip() for c in df2.columns]
-
-    # Tolérances : certains fichiers peuvent utiliser "Produit"
-    if "Plat" not in df2.columns and "Produit" in df2.columns:
-        df2 = df2.rename(columns={"Produit": "Plat"})
-
-    if "Plat" not in df2.columns:
-        # tente de retrouver une colonne "Unnamed: 1" etc qui contient le plat
-        # heuristique: 1ère colonne texte non-allergène avec le plus de valeurs non vides
-        candidates = []
-        for c in df2.columns:
-            if c in ALLERGEN_COLUMNS:
-                continue
-            non_empty = df2[c].astype(str).map(lambda x: normalize_space(x).strip()).astype(bool).sum()
-            candidates.append((non_empty, c))
-        candidates.sort(reverse=True)
-        if candidates and candidates[0][0] > 0:
-            df2 = df2.rename(columns={candidates[0][1]: "Plat"})
-
-    if "Plat" not in df2.columns:
-        return pd.DataFrame(columns=["Plat"] + ALLERGEN_COLUMNS)
-
-    for a in ALLERGEN_COLUMNS:
-        if a not in df2.columns:
-            df2[a] = ""
-
-    df2["Plat"] = df2["Plat"].astype(str).map(lambda x: normalize_space(x).strip())
-    df2 = df2[df2["Plat"].astype(bool)]
-
-    return df2[["Plat"] + ALLERGEN_COLUMNS]
-
-
-def _load_master_df(master_path: str) -> pd.DataFrame:
-    """
-    Charge un master quel que soit son format:
-    1) TON format "Référence" (openpyxl)
-    2) un excel plat+colonnes allergènes classique (pandas)
-    3) un classeur allergènes rempli (fallback)
-    """
-    # 1) Essai: ton format "Référence"
-    try:
-        df = _read_master_reference_xlsx(master_path)
-        if df is not None and not df.empty and "Plat" in df.columns:
-            return df
-    except Exception:
-        pass
-
-    # 2) Essai: excel plat+colonnes allergènes "classique"
-    try:
-        m = pd.read_excel(master_path)
-        m = _sanitize_reference_df(m)
-        if m is not None and not m.empty and "Plat" in m.columns:
-            return m
-    except Exception:
-        pass
-
-    # 3) Fallback: classeur allergènes rempli
-    try:
-        return extract_reference_from_filled_allergen_workbook(master_path)
-    except Exception:
-        return pd.DataFrame(columns=["Plat"] + ALLERGEN_COLUMNS)
-
-
-# ----------------------------------------------------------------------
-# ÉCRITURE DU RÉFÉRENTIEL (SANS DÉTRUIRE L’APPRENTISSAGE)
-# ----------------------------------------------------------------------
-def write_reference_workbook(
-    df: pd.DataFrame,
-    out_path: str,
-    title: str = "Référentiel allergènes"
-) -> str:
-    """Écrit un référentiel allergènes au format classeur."""
+def write_reference_workbook(df: pd.DataFrame, out_path: str, title: str = "Référentiel allergènes") -> str:
+    """Écrit un référentiel (Plat + colonnes allergènes) dans un classeur au format 'Allergène ...' (plats en colonne B, X en C:R)."""
     from openpyxl import Workbook
-
     wb = Workbook()
     ws = wb.active
     ws.title = "Référence"
 
+    # Titre
     ws["A1"] = title
 
-    # ✅ IMPORTANT: on met un vrai header "Plat"
+    # En-têtes (ligne 3) : A3 libellé, B3 vide, C3..R3 allergènes
     ws["A3"] = "Référence"
-    ws["B3"] = "Plat"
+    ws["B3"] = None
     for i, a in enumerate(ALLERGEN_COLUMNS):
-        ws[f"{ALLERGEN_LETTERS[i]}3"] = a
+        col = ALLERGEN_LETTERS[i]
+        ws[f"{col}3"] = a
 
+    # Lignes de données à partir de 4
     if df is None or df.empty:
         wb.save(out_path)
         return out_path
 
-    df2 = _sanitize_reference_df(df)
-    if df2.empty:
-        wb.save(out_path)
-        return out_path
+    df2 = df.copy()
+    # assure colonnes attendues
+    if "Plat" not in df2.columns:
+        raise ValueError("Le DataFrame de référence doit contenir une colonne 'Plat'.")
+    for a in ALLERGEN_COLUMNS:
+        if a not in df2.columns:
+            df2[a] = ""
 
+    # Dé-doublonnage/tri stable
     df2["__k"] = df2["Plat"].apply(normalize_key)
-    df2 = df2[df2["__k"].astype(bool)]
-
-    # OR FINAL
-    merged = (
-        df2.groupby("__k", as_index=False)
-        .agg({a: "max" for a in ALLERGEN_COLUMNS})
-    )
-    merged["Plat"] = df2.groupby("__k")["Plat"].first().values
+    df2 = df2[df2["__k"].astype(bool)].copy()
+    df2 = df2.sort_values("__k").drop_duplicates("__k", keep="first")
 
     r = 4
-    for _, row in merged.iterrows():
-        ws[f"B{r}"] = row["Plat"]
+    for _, row in df2.iterrows():
+        dish = normalize_space(str(row["Plat"] or "")).strip()
+        if not dish:
+            continue
+        ws[f"B{r}"] = dish
         for i, a in enumerate(ALLERGEN_COLUMNS):
-            ws[f"{ALLERGEN_LETTERS[i]}{r}"] = "X" if _truthy(row[a]) else ""
+            col = ALLERGEN_LETTERS[i]
+            ws[f"{col}{r}"] = "X" if _truthy(row.get(a, "")) else ""
         r += 1
 
     wb.save(out_path)
     return out_path
 
 
-# ----------------------------------------------------------------------
-# FUSION MAÎTRE + NOUVEL APPRENTISSAGE
-# ----------------------------------------------------------------------
-def merge_reference(
-    master_path: Optional[str],
-    new_df: pd.DataFrame,
-    out_path: str
-) -> str:
-    """Fusionne new_df dans master (OR logique)."""
+def merge_reference(master_path: Optional[str], new_df: pd.DataFrame, out_path: str) -> str:
+    """Fusionne new_df dans master (OR) et réécrit le référentiel au format classeur (plats en colonne B, X en C:R)."""
 
-    master = pd.DataFrame(columns=["Plat"] + ALLERGEN_COLUMNS)
+    def _load_master_df(p: str) -> pd.DataFrame:
+        # 1) Essai format 'plat en colonnes' (ancien)
+        try:
+            m = pd.read_excel(p)
+            m.columns = [normalize_space(str(c or "")).strip() for c in m.columns]
+            if "Plat" in m.columns:
+                return m[["Plat"] + [c for c in ALLERGEN_COLUMNS if c in m.columns]].copy()
+        except Exception:
+            pass
+        # 2) Sinon, on considère que c'est un classeur au format 'Allergène ...'
+        return extract_reference_from_filled_allergen_workbook(p)
+
     if master_path and Path(master_path).exists():
         master = _load_master_df(master_path)
+    else:
+        master = pd.DataFrame(columns=["Plat"] + ALLERGEN_COLUMNS)
 
-    new_df = _sanitize_reference_df(new_df)
-    master = _sanitize_reference_df(master)
+    if master is None or master.empty:
+        merged = new_df.copy()
+    else:
+        master = master.copy()
+        new_df = new_df.copy()
 
-    df = pd.concat([master, new_df], ignore_index=True)
+        # assure colonnes
+        if "Plat" not in master.columns:
+            master["Plat"] = ""
+        for a in ALLERGEN_COLUMNS:
+            if a not in master.columns:
+                master[a] = ""
+            if a not in new_df.columns:
+                new_df[a] = ""
 
-    if df.empty or "Plat" not in df.columns:
-        return write_reference_workbook(pd.DataFrame(columns=["Plat"] + ALLERGEN_COLUMNS), out_path)
+        master["__k"] = master["Plat"].apply(normalize_key)
+        new_df["__k"] = new_df["Plat"].apply(normalize_key)
 
-    df["__k"] = df["Plat"].apply(normalize_key)
-    df = df[df["__k"].astype(bool)]
+        # index master
+        master_idx = {k: i for i, k in enumerate(master["__k"].tolist()) if k}
 
-    merged = (
-        df.groupby("__k", as_index=False)
-        .agg({a: "max" for a in ALLERGEN_COLUMNS})
-    )
-    merged["Plat"] = df.groupby("__k")["Plat"].first().values
+        for _, row in new_df.iterrows():
+            k = row.get("__k", "")
+            if not k:
+                continue
+            if k in master_idx:
+                i = master_idx[k]
+                for a in ALLERGEN_COLUMNS:
+                    if _truthy(master.at[i, a]) or _truthy(row.get(a, "")):
+                        master.at[i, a] = "X"
+            else:
+                master_idx[k] = len(master)
+                master.loc[len(master)] = {**{c: row.get(c, "") for c in ["Plat"] + ALLERGEN_COLUMNS}, "__k": k}
 
-    return write_reference_workbook(
-        merged[["Plat"] + ALLERGEN_COLUMNS],
-        out_path
-    )
+        merged = master.drop(columns=["__k"], errors="ignore")
+
+    # Réécrit au format attendu (comme ton fichier 'Allergène semaine.xlsx')
+    return write_reference_workbook(merged[["Plat"] + ALLERGEN_COLUMNS], out_path)
 
 
-# ----------------------------------------------------------------------
-# POINT D’ENTRÉE
-# ----------------------------------------------------------------------
 def learn_from_filled_allergen_workbook(
     filled_path: str,
     master_path: Optional[str],
     out_master_path: str,
 ) -> str:
-    """Lit un classeur rempli et met à jour le référentiel maître."""
+    """Point d'entrée: lit le classeur rempli et met à jour le référentiel maître."""
     new_df = extract_reference_from_filled_allergen_workbook(filled_path)
     return merge_reference(master_path, new_df, out_master_path)
