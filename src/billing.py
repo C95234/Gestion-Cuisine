@@ -256,10 +256,19 @@ def export_monthly_workbook(
     records = records.copy()
     records["date"] = pd.to_datetime(records["date"]).dt.date
 
-    # Normalize site names (ex: "Internat 24 ter" + "Internat 24 simple" -> "Internat")
+    # Normalize site names (facturation):
+    # - "24 ter" + "24 simple" -> "Internat" (business rule)
+    # - any site containing "internat" -> "Internat" (legacy / variants)
     def _norm_site_name(s: str) -> str:
         s0 = str(s).strip()
         sN = _norm(s0)
+        if sN in {"24 ter", "24 simple", "24ter", "24simple"}:
+            return "Internat"
+        # tolerate variants like "24 ter - internat" etc.
+        if ("24" in sN) and ("ter" in sN) and ("internat" in sN):
+            return "Internat"
+        if ("24" in sN) and ("simple" in sN) and ("internat" in sN):
+            return "Internat"
         if "internat" in sN:
             return "Internat"
         return s0
