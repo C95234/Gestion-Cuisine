@@ -78,8 +78,13 @@ def planning_to_daily_totals(
     """
     def _one(df: pd.DataFrame) -> pd.DataFrame:
         if df is None or df.empty:
-            return pd.DataFrame(columns=["Site", "Regime", "Lundi","Mardi","Jeudi","Jeudi","Vendredi","Samedi","Dimanche"])
-        return df.copy()
+            return pd.DataFrame(columns=["Site", "Regime", "Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"])
+        out = df.copy()
+        # If the source file has duplicate column names (can happen after manual edits),
+        # keep the first occurrence to avoid double-counting in melt/groupby.
+        if getattr(out, 'columns', None) is not None:
+            out = out.loc[:, ~out.columns.duplicated()]
+        return out
 
     dej = _one(dej)
     din = _one(din)
@@ -236,9 +241,12 @@ def export_monthly_workbook(
     custom_prices: Optional[dict] = None,
 ) -> str:
     """
-    Create an Excel workbook with 1 sheet per month found in records.
-    Each sheet contains 2 blocks: Repas (sans PDJ / sans M&L) and Mixé/Lissé.
-    Layout inspired by your monthly ODS template.
+    Create an Excel workbook for **one full year (Janvier -> Décembre)**.
+
+    - 1 sheet per month of the target year (always 12 sheets)
+    - Each sheet contains 2 blocks: Repas (sans PDJ / sans M&L) and Mixé/Lissé
+    - The target year is inferred from the most recent date found in `records`.
+      (So even if you export only one month, the workbook still contains Jan->Dec.)
     """
     if records is None or records.empty:
         wb = openpyxl.Workbook()
@@ -252,31 +260,34 @@ def export_monthly_workbook(
     records = records.copy()
     records["date"] = pd.to_datetime(records["date"]).dt.date
 
-    # Months present
+    # Inferred target year (latest date)
+    target_year = max(records["date"]).year
+
     records["year"] = records["date"].map(lambda d: d.year)
     records["month"] = records["date"].map(lambda d: d.month)
-    months = sorted({(y, m) for y, m in zip(records["year"], records["month"])})
+
+    # Use a stable site list for the whole year (consistent columns across months)
+    year_records = records[records["year"] == target_year]
+    if not year_records.empty:
+        sites = sorted(year_records["site"].dropna().unique().tolist(), key=lambda s: str(s).upper())
+    else:
+        sites = sorted(records["site"].dropna().unique().tolist(), key=lambda s: str(s).upper())
 
     wb = openpyxl.Workbook()
-    # remove default sheet
     wb.remove(wb.active)
 
-    for (y, m) in months:
-        sheet_name = f"{y}-{m:02d}"
+    for m in range(1, 13):
+        sheet_name = f"{target_year}-{m:02d}"
         ws = wb.create_sheet(sheet_name)
 
-        month_start = dt.date(y, m, 1)
-        # month end
+        month_start = dt.date(target_year, m, 1)
         if m == 12:
-            month_end = dt.date(y+1, 1, 1) - dt.timedelta(days=1)
+            month_end = dt.date(target_year + 1, 1, 1) - dt.timedelta(days=1)
         else:
-            month_end = dt.date(y, m+1, 1) - dt.timedelta(days=1)
+            month_end = dt.date(target_year, m + 1, 1) - dt.timedelta(days=1)
 
-        # Determine sites for this month
-        sub = records[(records["year"] == y) & (records["month"] == m)]
-        sites = sorted(sub["site"].dropna().unique().tolist(), key=lambda s: s.upper())
+        sub = records[(records["year"] == target_year) & (records["month"] == m)].copy()
 
-        # Build two blocks
         r = 1
         r = _write_month_block(ws, r, "Repas", "repas", sub, sites, month_start, month_end, custom_prices=custom_prices)
         r += 2
@@ -286,13 +297,14 @@ def export_monthly_workbook(
         ws.column_dimensions["A"].width = 10
         for i, _ in enumerate(sites, start=2):
             ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = 14
-        ws.column_dimensions[openpyxl.utils.get_column_letter(len(sites)+2)].width = 12
+        ws.column_dimensions[openpyxl.utils.get_column_letter(len(sites) + 2)].width = 12
 
-        # Freeze panes at first data row after headers for readability
+        # Freeze panes: keep headers + left column visible
         ws.freeze_panes = "B5"
 
     wb.save(out_path)
     return out_path
+
 
 
 def _style_header_cell(cell):
