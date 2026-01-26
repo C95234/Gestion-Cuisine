@@ -295,6 +295,59 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
             )
             st.success(f"Semaine mémorisée : {n_repas} lignes repas, {n_ml} lignes mixé/lissé.")
 
+        st.markdown("### Mémoriser plusieurs semaines d'un coup")
+        st.caption(
+            "Optionnel : upload plusieurs plannings (1 fichier = 1 semaine), choisis le lundi de départ, et l'app mémorise tout d'un coup."
+        )
+
+        batch_files = st.file_uploader(
+            "Plannings fabrication (plusieurs fichiers .xlsx)",
+            type=["xlsx"],
+            accept_multiple_files=True,
+            key="batch_plannings",
+        )
+        batch_monday = st.date_input(
+            "Lundi de départ (pour le 1er fichier)",
+            value=week_monday,
+            key="batch_monday",
+        )
+
+        if st.button("📌 Mémoriser ces semaines", key="batch_save"):
+            if not batch_files:
+                st.error("Ajoute au moins 1 fichier planning (.xlsx).")
+            else:
+                total_repas = 0
+                total_ml = 0
+                for i, up in enumerate(batch_files):
+                    w_mon = batch_monday + dt.timedelta(days=7 * i)
+
+                    # Parse fabrication (openpyxl accepte aussi le file-like)
+                    plan_i = parse_planning_fabrication(up)
+
+                    # Mixé/Lissé : nécessite un path (on passe par un temp)
+                    mix_i = {"dejeuner": pd.DataFrame(), "diner": pd.DataFrame()}
+                    try:
+                        tmp_path_i = _save_uploaded_file(up, suffix=".xlsx")
+                        mix_i = parse_planning_mixe_lisse(tmp_path_i)
+                    except Exception:
+                        pass
+
+                    repas_i = planning_to_daily_totals(plan_i["dejeuner"], plan_i["diner"], w_mon)
+                    ml_i = mixe_lisse_to_daily_totals(mix_i.get("dejeuner"), mix_i.get("diner"), w_mon)
+
+                    n_r, n_m = save_week(
+                        week_monday=w_mon,
+                        repas_daily=repas_i,
+                        ml_daily=ml_i,
+                        source_filename=getattr(up, "name", ""),
+                    )
+                    total_repas += n_r
+                    total_ml += n_m
+
+                st.success(
+                    f"Semaines mémorisées : {len(batch_files)} fichier(s) → {total_repas} lignes repas, {total_ml} lignes mixé/lissé."
+                )
+
         st.markdown("### Export facturation")
         records = load_records()
         if records.empty:
