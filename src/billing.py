@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import datetime as dt
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -50,7 +51,25 @@ def _write_meta(meta: dict) -> None:
 # -----------------------------
 
 def _norm(s: str) -> str:
-    return (s or "").strip().lower()
+    return (s or "").strip().
+def norm_site_facturation(site: str) -> str:
+    """Business rule: '24 ter' + '24 simple' must be billed as a single column 'Internat'."""
+    s0 = str(site or "").strip()
+    sN = _norm(s0)
+    # exact / near-exact matches
+    if re.fullmatch(r"24\s*(ter|simple)", sN):
+        return "Internat"
+    if sN in {"24ter", "24simple"}:
+        return "Internat"
+    # tolerate variants containing these tokens
+    if ("24" in sN) and (("ter" in sN) or ("simple" in sN)) and ("internat" in sN):
+        return "Internat"
+    if "internat" in sN and ("24" in sN):
+        return "Internat"
+    return s0
+
+
+lower()
 
 
 def is_pdj_regime(regime: str) -> bool:
@@ -163,7 +182,7 @@ def save_week(
             return pd.DataFrame(columns=["date","site","category","qty","week_monday","source"])
         out = df.copy()
         out["date"] = pd.to_datetime(out["date"]).dt.date
-        out["site"] = out["site"].astype(str).str.strip()
+        out["site"] = out["site"].astype(str).map(norm_site_facturation)
         out["category"] = category
         out["qty"] = pd.to_numeric(out[qty_col], errors="coerce").fillna(0).astype(int)
         out["week_monday"] = week_monday.isoformat()
@@ -255,25 +274,9 @@ def export_monthly_workbook(
     # Ensure dates
     records = records.copy()
     records["date"] = pd.to_datetime(records["date"]).dt.date
-
-    # Normalize site names (facturation):
-    # - "24 ter" + "24 simple" -> "Internat" (business rule)
-    # - any site containing "internat" -> "Internat" (legacy / variants)
-    def _norm_site_name(s: str) -> str:
-        s0 = str(s).strip()
-        sN = _norm(s0)
-        if sN in {"24 ter", "24 simple", "24ter", "24simple"}:
-            return "Internat"
-        # tolerate variants like "24 ter - internat" etc.
-        if ("24" in sN) and ("ter" in sN) and ("internat" in sN):
-            return "Internat"
-        if ("24" in sN) and ("simple" in sN) and ("internat" in sN):
-            return "Internat"
-        if "internat" in sN:
-            return "Internat"
-        return s0
+    # Normalize site names (facturation): "24 ter" + "24 simple" -> "Internat"
     if "site" in records.columns:
-        records["site"] = records["site"].map(_norm_site_name)
+        records["site"] = records["site"].map(norm_site_facturation)
 
     # Months present
     records["year"] = records["date"].map(lambda d: d.year)
