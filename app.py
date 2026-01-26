@@ -304,18 +304,16 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
             records["date"] = pd.to_datetime(records["date"]).dt.date
             months = sorted({(d.year, d.month) for d in records["date"]})
             month_labels = [f"{y}-{m:02d}" for (y, m) in months]
+            # Export produces a full-year workbook (Jan → Dec) for the most recent year.
+            # We keep the selector for information, but default to all months so users don't
+            # accidentally export only the last one.
             choice = st.multiselect(
-                "Mois à exporter", options=month_labels, default=month_labels[-1:]
+                "Mois présents (info)", options=month_labels, default=month_labels
             )
 
             if st.button("Générer le classeur Excel de facturation"):
-                if choice:
-                    keep = set(choice)
-                    records_f = records.copy()
-                    records_f["ym"] = pd.to_datetime(records_f["date"]).dt.strftime("%Y-%m")
-                    records_f = records_f[records_f["ym"].isin(keep)].drop(columns=["ym"])
-                else:
-                    records_f = records
+                # Always export the full year so the workbook can be used from Jan to Dec.
+                records_f = records
 
                 out_xlsx = _temp_out_path(".xlsx")
                 export_monthly_workbook(records_f, out_xlsx)
