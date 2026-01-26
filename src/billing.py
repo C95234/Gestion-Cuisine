@@ -51,25 +51,25 @@ def _write_meta(meta: dict) -> None:
 # -----------------------------
 
 def _norm(s: str) -> str:
-    return (s or "").strip().
+    return (str(s or "")).strip().lower()
+
+
 def norm_site_facturation(site: str) -> str:
     """Business rule: '24 ter' + '24 simple' must be billed as a single column 'Internat'."""
     s0 = str(site or "").strip()
     sN = _norm(s0)
-    # exact / near-exact matches
+
+    # Exact / near-exact matches
     if re.fullmatch(r"24\s*(ter|simple)", sN):
         return "Internat"
     if sN in {"24ter", "24simple"}:
         return "Internat"
-    # tolerate variants containing these tokens
-    if ("24" in sN) and (("ter" in sN) or ("simple" in sN)) and ("internat" in sN):
+
+    # Tolerate variants containing the tokens (with or without extra words)
+    if "24" in sN and ("ter" in sN or "simple" in sN):
         return "Internat"
-    if "internat" in sN and ("24" in sN):
-        return "Internat"
+
     return s0
-
-
-lower()
 
 
 def is_pdj_regime(regime: str) -> bool:
@@ -309,7 +309,7 @@ def export_monthly_workbook(
         # Month slice (sites are kept stable across the year)
         sub = records[(records["year"] == y) & (records["month"] == m)].copy()
 
-# Build two blocks
+        # Build two blocks
         r = 1
         r = _write_month_block(ws, r, "Repas", "repas", sub, sites, month_start, month_end, custom_prices=custom_prices)
         r += 2
