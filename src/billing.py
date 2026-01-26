@@ -78,8 +78,27 @@ def planning_to_daily_totals(
     """
     def _one(df: pd.DataFrame) -> pd.DataFrame:
         if df is None or df.empty:
-            return pd.DataFrame(columns=["Site", "Regime", "Lundi","Mardi","Jeudi","Jeudi","Vendredi","Samedi","Dimanche"])
-        return df.copy()
+            # IMPORTANT: keep the exact day columns **once** (no duplicates).
+            # Duplicated names (e.g. "Jeudi" twice) silently double-count when we melt/pivot.
+            return pd.DataFrame(
+                columns=[
+                    "Site",
+                    "Regime",
+                    "Lundi",
+                    "Mardi",
+                    "Mercredi",
+                    "Jeudi",
+                    "Vendredi",
+                    "Samedi",
+                    "Dimanche",
+                ]
+            )
+
+        out = df.copy()
+        # Safety: if an uploaded sheet contains duplicated day columns, keep the first occurrence.
+        # (This avoids billing over-counts without changing the expected input format.)
+        out = out.loc[:, ~out.columns.duplicated()].copy()
+        return out
 
     dej = _one(dej)
     din = _one(din)
@@ -288,8 +307,9 @@ def export_monthly_workbook(
             ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = 14
         ws.column_dimensions[openpyxl.utils.get_column_letter(len(sites)+2)].width = 12
 
-        # Freeze panes at first data row after headers for readability
-        ws.freeze_panes = "B5"
+        # Freeze panes at first data row after headers for readability.
+        # Our first block starts at row 1 and data begins at row 4.
+        ws.freeze_panes = "B4"
 
     wb.save(out_path)
     return out_path
