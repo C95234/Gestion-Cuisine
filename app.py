@@ -240,6 +240,8 @@ with st.sidebar:
                 st.success("Unités enregistrées.")
 
         with ctab3:
+            # ✅ IMPORTANT : forcer les colonnes même si suppliers est vide,
+            # sinon st.data_editor peut être "bloqué" sur l'ajout.
             dfs = pd.DataFrame(
                 [
                     {
@@ -249,8 +251,17 @@ with st.sidebar:
                         "coord2": s.coord2,
                     }
                     for s in suppliers
-                ]
+                ],
+                columns=["name", "customer_code", "coord1", "coord2"],
             )
+
+            # ✅ si vide, on met 1 ligne "starter" editable
+            if dfs.empty:
+                dfs = pd.DataFrame(
+                    [{"name": "", "customer_code": "", "coord1": "", "coord2": ""}],
+                    columns=["name", "customer_code", "coord1", "coord2"],
+                )
+
             dfs_edit = st.data_editor(
                 dfs,
                 use_container_width=True,
@@ -264,7 +275,10 @@ with st.sidebar:
                 key="cfg_suppliers",
             )
             if st.button("Enregistrer les fournisseurs", key="save_suppliers"):
-                store.save_suppliers(dfs_edit.to_dict("records"))
+                # ✅ On vire les lignes "vides" (sans nom)
+                recs = dfs_edit.fillna("").to_dict("records")
+                recs = [r for r in recs if str(r.get("name", "")).strip()]
+                store.save_suppliers(recs)
                 st.success("Fournisseurs enregistrés.")
 
 if not planning_file or not menu_file:
@@ -276,8 +290,8 @@ try:
     planning_path = _save_uploaded_file(planning_file, suffix=".xlsx")
     menu_path = _save_uploaded_file(menu_file, suffix=".xlsx")
 
-    # Parse planning
-    planning = parse_planning_fabrication(planning_file)
+    # ✅ Parse planning depuis le PATH (plus robuste sur Streamlit Cloud)
+    planning = parse_planning_fabrication(planning_path)
 
     # Optionnel : feuille mixé/lissé (si présente)
     mix_planning = {"dejeuner": pd.DataFrame(), "diner": pd.DataFrame()}
@@ -330,7 +344,8 @@ try:
         def _totaux_jour(piv: pd.DataFrame) -> pd.Series:
             day_cols = [c for c in DAY_NAMES if c in piv.columns]
             if (
-                not piv.empty
+                piv is not None
+                and not piv.empty
                 and ("Regime" in piv.columns)
                 and (piv["Regime"] == "TOTAL JOUR").any()
             ):
@@ -373,7 +388,7 @@ try:
 
         store2 = ConfigStore()
         coeffs2 = [
-            {"name": c.name, "value": float(c.value), "default_unit": c.default_unit}
+            {"name": c.name, "value": float(c.value), "default_unit": getattr(c, "default_unit", "")}
             for c in store2.load_coefficients()
         ]
         units2 = store2.load_units()
@@ -553,11 +568,13 @@ try:
                 total_ml = 0
                 for i, up in enumerate(batch_files):
                     w_mon = batch_monday + dt.timedelta(days=7 * i)
-                    plan_i = parse_planning_fabrication(up)
+
+                    # ✅ parse depuis un fichier temp (robuste)
+                    tmp_path_i = _save_uploaded_file(up, suffix=".xlsx")
+                    plan_i = parse_planning_fabrication(tmp_path_i)
 
                     mix_i = {"dejeuner": pd.DataFrame(), "diner": pd.DataFrame()}
                     try:
-                        tmp_path_i = _save_uploaded_file(up, suffix=".xlsx")
                         mix_i = parse_planning_mixe_lisse(tmp_path_i)
                     except Exception:
                         pass
