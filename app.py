@@ -15,7 +15,15 @@ from src.processor import (
     export_bons_livraison_pdf,
 )
 
-from src.config_store import ConfigStore
+# ✅ Remplacement : on "dé-masque" l'erreur réelle de Streamlit Cloud
+try:
+    from src.config_store import ConfigStore
+except Exception as e:
+    st.error("Erreur d'import de ConfigStore (src/config_store.py)")
+    st.code(repr(e))
+    st.code(traceback.format_exc())
+    raise
+
 from src.order_forms import export_orders_per_supplier_excel, export_orders_per_supplier_pdf
 from src.billing import (
     planning_to_daily_totals,
@@ -31,6 +39,7 @@ from src.allergens.generator import generate_allergen_workbook
 
 
 DAY_NAMES = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+
 
 
 def format_pivot_for_display(piv: pd.DataFrame) -> pd.DataFrame:
