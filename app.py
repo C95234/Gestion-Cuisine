@@ -14,6 +14,20 @@ from src.processor import (
     export_excel,
     export_bons_livraison_pdf,
 )
+
+from src.config_store import (
+    load_coefficients,
+    save_coefficients,
+    load_units,
+    save_units,
+    load_suppliers,
+    save_suppliers,
+)
+
+from src.order_forms import (
+    export_orders_per_supplier_pdf,
+    export_orders_per_supplier_excel,
+)
 from src.billing import (
     planning_to_daily_totals,
     mixe_lisse_to_daily_totals,
@@ -104,6 +118,53 @@ with st.sidebar:
     planning_file = st.file_uploader("Planning fabrication (.xlsx)", type=["xlsx"])
     menu_file = st.file_uploader("Menu (.xlsx)", type=["xlsx"])
     st.markdown("---")
+    st.header("Paramètres — Bons de commande")
+    st.caption("Ces listes sont mémorisées (coefficients, unités, fournisseurs).")
+
+    # --- Chargement valeurs persistées ---
+    coeffs_cur = load_coefficients()
+    units_cur = load_units()
+    suppliers_cur = load_suppliers()
+
+    with st.expander("Coefficients (menu déroulant)", expanded=False):
+        dfc = pd.DataFrame({"Coefficient": coeffs_cur})
+        dfc2 = st.data_editor(dfc, num_rows="dynamic", use_container_width=True, key="coeffs_editor")
+        if st.button("Enregistrer coefficients", key="save_coeffs"):
+            save_coefficients(dfc2["Coefficient"].tolist())
+            st.success("Coefficients enregistrés.")
+
+    with st.expander("Unités (menu déroulant)", expanded=False):
+        dfu = pd.DataFrame({"Unité": units_cur})
+        dfu2 = st.data_editor(dfu, num_rows="dynamic", use_container_width=True, key="units_editor")
+        if st.button("Enregistrer unités", key="save_units"):
+            save_units(dfu2["Unité"].tolist())
+            st.success("Unités enregistrées.")
+
+    with st.expander("Fournisseurs (menus + en-têtes PDF/Excel)", expanded=False):
+        dfs = pd.DataFrame(suppliers_cur)
+        if dfs.empty:
+            dfs = pd.DataFrame(columns=["name", "code_client", "coord1", "coord2"])
+        dfs = dfs.rename(
+            columns={
+                "name": "Nom",
+                "code_client": "Code client",
+                "coord1": "Coordonnée 1",
+                "coord2": "Coordonnée 2",
+            }
+        )
+        dfs2 = st.data_editor(dfs, num_rows="dynamic", use_container_width=True, key="suppliers_editor")
+        if st.button("Enregistrer fournisseurs", key="save_suppliers"):
+            back = dfs2.rename(
+                columns={
+                    "Nom": "name",
+                    "Code client": "code_client",
+                    "Coordonnée 1": "coord1",
+                    "Coordonnée 2": "coord2",
+                }
+            )
+            save_suppliers(back.to_dict(orient="records"))
+            st.success("Fournisseurs enregistrés.")
+
     st.caption(
         "Conseil : utilise les fichiers d’origine (avec formules) ; l’app récupère les valeurs correctement."
     )
@@ -213,6 +274,66 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                     file_name="Bon de commande.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
+
+        st.divider()
+        st.subheader("Bons par fournisseur (après édition du bon)")
+        st.caption(
+            "Étape 1 : télécharge le bon, puis complète les colonnes **Coefficient / Unité / Fournisseur** via les menus déroulants.\n"
+            "Étape 2 : upload le fichier modifié ici pour obtenir :\n"
+            "- 1 **classeur Excel** (1 feuille par fournisseur)\n"
+            "- 1 **PDF** (1 page par fournisseur) avec coordonnées dans l’en-tête."
+        )
+
+        bc_edited = st.file_uploader("Bon de commande édité (.xlsx)", type=["xlsx"], key="bc_edited")
+        cA, cB = st.columns(2)
+
+        def _supplier_map() -> dict:
+            sup = load_suppliers()
+            return {s.get("name", "").strip(): s for s in sup if s.get("name", "").strip()}
+
+        if bc_edited is not None:
+            try:
+                bc_path = _save_uploaded_file(bc_edited, suffix=".xlsx")
+                # Par défaut on lit la feuille 'Bon de commande' si elle existe
+                xls = pd.ExcelFile(bc_path)
+                sheet = "Bon de commande" if "Bon de commande" in xls.sheet_names else xls.sheet_names[0]
+                bc_df = pd.read_excel(bc_path, sheet_name=sheet)
+            except Exception as e:
+                st.error(f"Impossible de lire le classeur: {e}")
+                bc_df = None
+
+            if bc_df is not None:
+                with cA:
+                    if st.button("Générer Excel (1 feuille / fournisseur)", key="gen_bc_xlsx"):
+                        out_xlsx = _temp_out_path(".xlsx")
+                        export_orders_per_supplier_excel(
+                            bon_commande_df=bc_df,
+                            out_xlsx_path=out_xlsx,
+                            supplier_infos=_supplier_map(),
+                        )
+                        with open(out_xlsx, "rb") as f:
+                            st.download_button(
+                                "Télécharger Bons par fournisseur.xlsx",
+                                data=f,
+                                file_name="Bons par fournisseur.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            )
+
+                with cB:
+                    if st.button("Générer PDF (1 page / fournisseur)", key="gen_bc_pdf"):
+                        out_pdf = _temp_out_path(".pdf")
+                        export_orders_per_supplier_pdf(
+                            bon_commande_df=bc_df,
+                            out_pdf_path=out_pdf,
+                            supplier_infos=_supplier_map(),
+                        )
+                        with open(out_pdf, "rb") as f:
+                            st.download_button(
+                                "Télécharger Bons par fournisseur.pdf",
+                                data=f,
+                                file_name="Bons par fournisseur.pdf",
+                                mime="application/pdf",
+                            )
 
     with tab_bl:
         st.subheader("Bons de livraison (PDF)")
