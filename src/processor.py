@@ -10,10 +10,6 @@ import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
-# ✅ AJOUTS (listes déroulantes Excel)
-from openpyxl.worksheet.datavalidation import DataValidation
-from openpyxl.utils import get_column_letter
-
 # PDF (bons de livraison)
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
@@ -31,6 +27,7 @@ def clean_text(x) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     s = s.strip(" -;,:")
     return s
+
 
 
 def normalize_regime_label(regime: str) -> str:
@@ -56,7 +53,6 @@ def normalize_regime_label(regime: str) -> str:
         return "SPÉCIAL"
 
     return raw
-
 
 def _parse_date(x, default_year: Optional[int] = None) -> Optional[dt.date]:
     if x is None:
@@ -427,10 +423,10 @@ def parse_planning_mixe_lisse(path: str, sheet_name: str = "Planning mixe lisse 
                 row = int(m.group(4))
                 return _eval(sh, addr(col, row), depth + 1)
 
-            # =SUM(C3:C4) / SUM(...); Excel FR possible
-            sm = re.match(r"^=\s*(SUM|SOMME)\(([^)]+)\)\s*$", s, re.I)
+            # =SUM(C3:C4) / SUM(...)
+            sm = re.match(r"^=\s*SUM\(([^)]+)\)\s*$", s, re.I)
             if sm:
-                rng = sm.group(2).strip()
+                rng = sm.group(1).strip()
                 # support "C3:C4" (même feuille)
                 if ":" in rng:
                     a1, a2 = [x.strip().replace("$","") for x in rng.split(":", 1)]
@@ -438,16 +434,20 @@ def parse_planning_mixe_lisse(path: str, sheet_name: str = "Planning mixe lisse 
                     if m1 and m2:
                         c1, r1 = m1.group(1), int(m1.group(2))
                         c2, r2 = m2.group(1), int(m2.group(2))
+                        # colonnes: on ne gère que même colonne ou petite plage
+                        # ici c'est toujours même colonne dans ton fichier
                         if c1 == c2:
                             total = 0.0
                             for rr in range(min(r1,r2), max(r1,r2)+1):
                                 total += _to_number(_eval(sheet, addr(c1, rr), depth + 1))
                             return total
+                # fallback: si SUM contient des virgules
                 parts = [p.strip() for p in re.split(r"[;,]", rng) if p.strip()]
                 total = 0.0
                 for p in parts:
                     p2 = p.replace("$","")
                     if ":" in p2:
+                        # ignore ranges complexes
                         continue
                     m1 = cell_re.match(p2)
                     if m1:
@@ -456,7 +456,9 @@ def parse_planning_mixe_lisse(path: str, sheet_name: str = "Planning mixe lisse 
 
             # expressions =+C5+C8-...
             expr = s.lstrip("=").strip()
+            # remplace ; par + (Excel FR parfois)
             expr = expr.replace(";", "+")
+            # tokenisation simple +/-
             tokens = re.split(r"(\+|\-)", expr)
             total = 0.0
             sign = +1.0
@@ -470,6 +472,7 @@ def parse_planning_mixe_lisse(path: str, sheet_name: str = "Planning mixe lisse 
                 if t == "-":
                     sign = -1.0
                     continue
+                # t peut être une ref feuille ou cellule
                 t_clean = t.replace("$","")
                 mm = ref_re.match(t_clean)
                 if mm:
@@ -482,12 +485,14 @@ def parse_planning_mixe_lisse(path: str, sheet_name: str = "Planning mixe lisse 
                 if mc:
                     total += sign * _to_number(_eval(sheet, addr(mc.group(1), int(mc.group(2))), depth + 1))
                     continue
+                # nombre
                 total += sign * _to_number(t_clean)
             return total
 
         return v
 
     def _read_block(start_row: int, header_row: int) -> pd.DataFrame:
+        # header_row has days in columns C..I
         day_cols = {DAY_NAMES[i]: 3+i for i in range(7)}  # C=3
         rows = []
         cur_site = None
@@ -520,11 +525,12 @@ def parse_planning_mixe_lisse(path: str, sheet_name: str = "Planning mixe lisse 
         df = pd.DataFrame(rows, columns=["Site","Regime"] + DAY_NAMES)
         return df
 
+    # locate blocks
+    # Déjeuner header row is 2, data starts 3. Dîner header row is 18, data starts 19.
     df_dej = _read_block(start_row=3, header_row=2)
     df_din = _read_block(start_row=19, header_row=18)
 
     return {"dejeuner": df_dej, "diner": df_din}
-
 
 @dataclass
 class MenuItem:
@@ -555,6 +561,7 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
     for c in range(2, ws.max_column + 1):
         h = header.get(c, "")
         g = group.get(c, "")
+        # Certains fichiers ont "HYPOCALORIQUE" en ligne 2 (groupe) mais un header vide.
         if not h and not g:
             continue
 
@@ -593,6 +600,12 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
         return score
 
     def detect_block_height(start_row: int) -> int:
+        """Détermine si un bloc repas fait 5 lignes (1 entrée, 2 plats, 1 laitage, 1 dessert)
+        ou 6 lignes (1 entrée, 3 lignes de plat/garniture, 1 laitage, 1 dessert).
+
+        Objectif: éviter les décalages quand certaines journées n'ont que 2 lignes de plat.
+        """
+        # candidates: (height, laitage_row_offset, dessert_row_offset)
         candidates = [
             (6, 4, 5),
             (5, 3, 4),
@@ -605,6 +618,7 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
             if dessert_row > ws.max_row:
                 continue
             score = _row_score(laitage_row, _DAIRY_KW) + _row_score(dessert_row, _DESSERT_KW)
+            # bonus si la ligne dessert ressemble vraiment à un dessert dans au moins 1 colonne
             if _row_score(dessert_row, _DESSERT_KW) > 0:
                 score += 2
             if score > best_score:
@@ -639,6 +653,7 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
             if dessert:
                 items.append(MenuItem(date_val, repas, "Dessert", regime, dessert))
 
+    # --- Scan dates in column A ---
     date_rows: List[tuple[int, dt.date]] = []
     anchor_year: Optional[int] = None
     for r in range(4, ws.max_row + 1):
@@ -648,6 +663,7 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
             anchor_year = d.year
             date_rows.append((r, d))
 
+    # Remove duplicates while keeping order (in case the sheet repeats the same date)
     seen = set()
     uniq: List[tuple[int, dt.date]] = []
     for rr, dd in date_rows:
@@ -661,6 +677,7 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
         read_block(rr, dd, "Déjeuner", h_dej)
 
         rr_din = rr + h_dej
+        # si le dîner dépasse la feuille, on ignore
         if rr_din <= ws.max_row:
             h_din = detect_block_height(rr_din)
             read_block(rr_din, dd, "Dîner", h_din)
@@ -682,11 +699,26 @@ def clean_text_delivery(x) -> str:
     s = str(x)
     s = s.replace("\u2026", "...")
     s = re.sub(r"\s+", " ", s).strip()
+    # Do NOT strip '*' here.
     return s
 
 
 def parse_menu_delivery(path: str, sheet_name: str = "Feuil2") -> Dict[tuple, List[str]]:
-    """Parse menu for delivery notes."""
+    """Parse menu for delivery notes.
+
+    Output: dict[(date, repas, regime)] -> 5 bullet lines
+    (Entrée, Plat 1, Plat 2, Laitage, Dessert)
+
+    Notes:
+    - Excel layout is the same as parse_menu(): 6 rows per meal block.
+    - We map:
+        row0 -> Entrée
+        row1 -> Plat 1
+        row2 + row3 -> Plat 2 (joined with " / " if both present)
+        row4 -> Laitage
+        row5 -> Dessert
+    - If a cell is empty, we use the em dash "—".
+    """
     wb = openpyxl.load_workbook(path, data_only=True)
     if sheet_name not in wb.sheetnames:
         raise ValueError(f"Feuille '{sheet_name}' introuvable. Feuilles dispo: {wb.sheetnames}")
@@ -726,6 +758,7 @@ def parse_menu_delivery(path: str, sheet_name: str = "Feuil2") -> Dict[tuple, Li
             lines = [ln if ln else "—" for ln in lines]
             out[(date_val, repas, regime)] = lines
 
+    # Scan dates in column A (no fixed step)
     date_rows: List[tuple[int, dt.date]] = []
     anchor_year: Optional[int] = None
     for r in range(4, ws.max_row + 1):
@@ -767,6 +800,505 @@ def _norm(s: str) -> str:
     return s
 
 
+def export_bons_livraison_pdf(
+    planning: Dict[str, pd.DataFrame],
+    menu_path: str,
+    out_pdf_path: str,
+    planning_path: Optional[str] = None,
+    sheet_menu: str = "Feuil2",
+    sites_exclus: Optional[List[str]] = None,
+) -> None:
+    """Generate delivery notes PDF.
+
+    Rules:
+    - Sites '24 ter', '24 simple' and 'IME TL' must NOT appear.
+    - All other sites are tournée 'Camion', except 'MAS' which is 'Barquette'.
+    - One page per (site, date).
+    - Regimes: show only regimes with at least one of Déj or Dîn > 0.
+    """
+
+    sites_exclus = sites_exclus or ["24 ter", "24 simple", "IME TL"]
+    excl_norm = {_norm(s) for s in sites_exclus}
+
+    menu_lines = parse_menu_delivery(menu_path, sheet_name=sheet_menu)
+
+    # --- Totaux de consommation par site / date (pour éviter de sortir des BL à 0) ---
+    def _dayname(d: dt.date) -> str:
+        return DAY_NAMES[d.weekday()]
+
+    def _site_day_total(df: pd.DataFrame, site: str, day_name: str) -> int:
+        if df is None or df.empty:
+            return 0
+        tmp = df.copy()
+        tmp["Site"] = tmp["Site"].astype(str).str.strip().str.lower()
+        s = (site or "").strip().lower()
+        sub = tmp[tmp["Site"] == s]
+        if sub.empty or day_name not in sub.columns:
+            return 0
+        return int(pd.to_numeric(sub[day_name], errors="coerce").fillna(0).sum())
+
+    all_dates = sorted({d for d in (_parse_date(k[0]) for k in menu_lines.keys()) if d is not None})
+
+    # Collect sites from planning
+    sites = set()
+    for key in ["dejeuner", "diner"]:
+        df = planning.get(key)
+        if df is not None and not df.empty:
+            sites |= set(df["Site"].astype(str).tolist())
+    sites_list = [s for s in sites if _norm(s) not in excl_norm]
+
+    # Ordre d'impression souhaité (les autres sites seront ajoutés ensuite par ordre alphabétique)
+    preferred = ["FAM", "Bussière", "Bruyère", "FO", "FDP", "MAS", "ESAT", "FM", "René"]
+    pref_norm = [_norm(x) for x in preferred]
+
+    def site_rank(s: str) -> tuple:
+        ns = _norm(s)
+        # FO et FDP: on accepte les deux libellés
+        for idx, pn in enumerate(pref_norm):
+            if pn in {"fo", "fdp"}:
+                if ns == "fo" or ns == "fdp" or ns.startswith("fo ") or ns.startswith("fdp ") or " fo" in ns or " fdp" in ns:
+                    return (idx, s)
+            if ns == pn or ns.startswith(pn + " ") or (" " + pn) in ns:
+                return (idx, s)
+        return (999, s)
+
+    sites = sorted(sites_list, key=site_rank)
+
+    # Libellés propres pour impression
+    SITE_LABELS = {
+        "fo": "Foyer Du Près",
+        "fdp": "Foyer Du Près",
+        "fm": "Foyer Fernand Marlier",
+    }
+
+    def display_site_name(s: str) -> str:
+        ns = _norm(s)
+        for k, v in SITE_LABELS.items():
+            if ns == k or ns.startswith(k + " ") or (" " + k) in ns:
+                return v
+        return s
+
+
+    # Regime order (fallback alphabetical)
+    order = [
+        "hypocalorique",
+        "speciaux",
+        "sans",  # ex: sans sel / sans porc ...
+        "lisse",
+        "mixe",
+        "standard",
+        "vegetarien",
+    ]
+
+    def regime_sort_key(reg: str):
+        n = _norm(reg)
+        for i, tok in enumerate(order):
+            if tok in n:
+                return (i, n)
+        return (999, n)
+
+    def is_mixe_lisse(reg: str) -> bool:
+        n = _norm(reg)
+        # couvre 'mixé', 'mixe', 'lissé', 'lisse', abréviations type 'ml'
+        if 'mixe' in n or 'lisse' in n:
+            return True
+        if n in {'ml', 'm l'} or ' ml ' in f' {n} ':
+            return True
+        return False
+
+    # Planning day columns are French day names with leading capital.
+    def jour_col(date_val: dt.date) -> str:
+        return DAY_NAMES[date_val.weekday()]
+
+    def count_for(df: pd.DataFrame, site: str, regime: str, date_val: dt.date) -> int:
+        if df is None or df.empty:
+            return 0
+        col = jour_col(date_val)
+        sub = df[(df["Site"] == site) & (df["Regime"] == regime)]
+        if sub.empty:
+            return 0
+        return int(pd.to_numeric(sub[col], errors="coerce").fillna(0).sum())
+
+    def regimes_for_site(date_val: dt.date, site: str) -> List[str]:
+        regs = set()
+        for key in ["dejeuner", "diner"]:
+            df = planning.get(key)
+            if df is None or df.empty:
+                continue
+            col = jour_col(date_val)
+            sub = df[df["Site"] == site]
+            if sub.empty:
+                continue
+            # keep only regimes with counts > 0 for that day
+            sub = sub[pd.to_numeric(sub[col], errors="coerce").fillna(0) > 0]
+            regs |= set(sub["Regime"].astype(str).tolist())
+        return sorted(regs, key=regime_sort_key)
+
+    def fmt_date_fr(d: dt.date) -> str:
+        # Match sample: "lundi 19 janvier 2026"
+        jours = [
+            "lundi",
+            "mardi",
+            "mercredi",
+            "jeudi",
+            "vendredi",
+            "samedi",
+            "dimanche",
+        ]
+        mois = [
+            "janvier",
+            "février",
+            "mars",
+            "avril",
+            "mai",
+            "juin",
+            "juillet",
+            "août",
+            "septembre",
+            "octobre",
+            "novembre",
+            "décembre",
+        ]
+        return f"{jours[d.weekday()]} {d.day} {mois[d.month-1]} {d.year}"
+
+    # --- PDF layout constants (match sample) ---
+    W, H = A4
+    x0 = 34  # left margin in points (matches sample)
+    y_top = H - 18  # title baseline ~18pt from top
+    line_h = 12
+
+    # Mixé/Lissé depuis la feuille dédiée (si fournie)
+    mix_planning = None
+    if planning_path:
+        try:
+            mix_planning = parse_planning_mixe_lisse(planning_path)
+        except Exception:
+            mix_planning = None
+
+    c = canvas.Canvas(out_pdf_path, pagesize=A4)
+    def _wrap_text(text: str, font_name: str, font_size: int, max_width: float) -> List[str]:
+        """Découpe un texte en lignes qui tiennent dans max_width."""
+        words = (text or "").split()
+        if not words:
+            return [""]
+        out_lines: List[str] = []
+        cur = words[0]
+        for w in words[1:]:
+            test = cur + " " + w
+            if c.stringWidth(test, font_name, font_size) <= max_width:
+                cur = test
+            else:
+                out_lines.append(cur)
+                cur = w
+        out_lines.append(cur)
+        return out_lines
+
+    def _draw_bullet(x: float, y: float, text: str, max_width: float, font_size: int = 9, leading: float = 11) -> float:
+        """Dessine une puce avec retour à la ligne si besoin. Retourne le nouveau y."""
+        bullet = "• "
+        font_name = "Helvetica"
+        c.setFont(font_name, font_size)
+
+        first_indent = c.stringWidth(bullet, font_name, font_size)
+        # lignes wrap sans la puce
+        lines = _wrap_text(text, font_name, font_size, max_width - first_indent)
+        if not lines:
+            lines = [""]
+
+        # première ligne avec puce
+        c.drawString(x, y, bullet + lines[0])
+        y -= leading
+
+        # lignes suivantes alignées sur le texte (sans répéter la puce)
+        for ln in lines[1:]:
+            c.drawString(x + first_indent, y, ln)
+            y -= leading
+
+        return y
+
+
+    def draw_page(site: str, date_val: dt.date):
+        # Header
+        c.setFont("Helvetica-Bold", 15)
+        c.drawString(x0, y_top, "BON DE LIVRAISON")
+
+        y = y_top - 24
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(x0, y, "Site : ")
+        c.setFont("Helvetica", 9)
+        c.drawString(x0 + 27.5, y, site)
+
+        # Zone utilisable (évite que ça déborde en bas)
+        y_min = 60  # réserve pour les signatures
+        max_width = (W - x0) - (x0 + 30)  # largeur texte à partir de l'indent puce
+
+        def _redraw_header_suite():
+            c.setFont("Helvetica-Bold", 15)
+            c.drawString(x0, y_top, "BON DE LIVRAISON (suite)")
+            yy = y_top - 24
+            c.setFont("Helvetica-Bold", 9)
+            c.drawString(x0, yy, "Site : ")
+            c.setFont("Helvetica", 9)
+            c.drawString(x0 + 27.5, yy, site)
+            yy -= 12
+            c.setFont("Helvetica-Bold", 9)
+            c.drawString(x0, yy, "Date : ")
+            c.setFont("Helvetica", 9)
+            c.drawString(x0 + 27.5, yy, fmt_date_fr(date_val))
+            return yy - 8
+
+        def ensure_space(needed_height: float) -> float:
+            nonlocal y
+            if y - needed_height < y_min:
+                c.showPage()
+                y = _redraw_header_suite()
+            return y
+
+        y -= line_h
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(x0, y, "Date : ")
+        c.setFont("Helvetica", 9)
+        c.drawString(x0 + 27.5, y, fmt_date_fr(date_val))
+
+        tournee = "Barquette" if _norm(site) == _norm("MAS") else "Camion"
+        y -= line_h
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(x0, y, "Tournée : ")
+        c.setFont("Helvetica", 9)
+        c.drawString(x0 + 44, y, tournee)        # Totals
+        df_dej = planning.get("dejeuner")
+        df_din = planning.get("diner")
+        col = jour_col(date_val)
+        tot_dej = 0
+        tot_din = 0
+        if df_dej is not None and not df_dej.empty:
+            tot_dej = int(pd.to_numeric(df_dej[df_dej["Site"] == site][col], errors="coerce").fillna(0).sum())
+        if df_din is not None and not df_din.empty:
+            tot_din = int(pd.to_numeric(df_din[df_din["Site"] == site][col], errors="coerce").fillna(0).sum())
+
+        # Mixé/Lissé (feuille dédiée) — si disponible
+        mix_dej = lisse_dej = mix_din = lisse_din = 0
+        if mix_planning is not None:
+            try:
+                mdej = mix_planning.get("dejeuner")
+                mdin = mix_planning.get("diner")
+                if mdej is not None and not mdej.empty:
+                    sub = mdej[mdej["Site"].astype(str).str.strip().str.lower() == str(site).strip().lower()]
+                    if not sub.empty:
+                        v_l = sub[sub["Regime"].astype(str).str.lower().str.contains("liss")][col].sum()
+                        v_m = sub[sub["Regime"].astype(str).str.lower().str.contains("mix")][col].sum()
+                        lisse_dej = int(_to_number(v_l)); mix_dej = int(_to_number(v_m))
+                if mdin is not None and not mdin.empty:
+                    sub = mdin[mdin["Site"].astype(str).str.strip().str.lower() == str(site).strip().lower()]
+                    if not sub.empty:
+                        v_l = sub[sub["Regime"].astype(str).str.lower().str.contains("liss")][col].sum()
+                        v_m = sub[sub["Regime"].astype(str).str.lower().str.contains("mix")][col].sum()
+                        lisse_din = int(_to_number(v_l)); mix_din = int(_to_number(v_m))
+            except Exception:
+                pass
+
+        tot_dej_all = tot_dej + mix_dej + lisse_dej
+        tot_din_all = tot_din + mix_din + lisse_din
+
+        y -= line_h * 1.6
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(x0, y, f"Total Déjeuner : {tot_dej_all}    Total Dîner : {tot_din_all}")
+
+        if (mix_dej + lisse_dej + mix_din + lisse_din) > 0:
+            y -= 12
+            c.setFont("Helvetica-Bold", 9)
+            c.drawString(x0, y, f"Détail Mixé/Lissé (inclus dans le total) — Déj: Mixé {mix_dej} / Lissé {lisse_dej}   |   Dîn: Mixé {mix_din} / Lissé {lisse_din}")
+            c.setFont("Helvetica", 9)
+
+
+        # Résumé Mixé/Lissé (si présent)
+        mix_dej = 0
+        mix_din = 0
+        if df_dej is not None and not df_dej.empty:
+            subm = df_dej[(df_dej["Site"] == site) & (df_dej["Regime"].astype(str).apply(is_mixe_lisse))]
+            if not subm.empty:
+                mix_dej = int(pd.to_numeric(subm[col], errors="coerce").fillna(0).sum())
+        if df_din is not None and not df_din.empty:
+            subm = df_din[(df_din["Site"] == site) & (df_din["Regime"].astype(str).apply(is_mixe_lisse))]
+            if not subm.empty:
+                mix_din = int(pd.to_numeric(subm[col], errors="coerce").fillna(0).sum())
+
+        if mix_dej > 0 or mix_din > 0:
+            y -= 12
+            c.setFont("Helvetica-Bold", 9)
+            c.drawString(x0, y, f"Mixé/Lissé livré : Déj {mix_dej} / Dîn {mix_din}")
+            c.setFont("Helvetica", 9)
+
+        # Temperature boxes (cadrage ajusté)
+        y -= 24
+        box_h = 28
+        gap = 20
+        box_w = (W - 2 * x0 - gap) / 2
+        box_top = y
+
+        c.rect(x0, box_top - box_h, box_w, box_h, stroke=1, fill=0)
+        c.rect(x0 + box_w + gap, box_top - box_h, box_w, box_h, stroke=1, fill=0)
+
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(x0 + 6, box_top - 12, "Température départ : ____ °C")
+        c.drawString(x0 + box_w + gap + 6, box_top - 12, "Température réception : ____ °C")
+
+        # Body
+        y = box_top - box_h - 10
+
+        regs = regimes_for_site(date_val, site)
+        for reg in regs:
+            dej_n = count_for(df_dej, site, reg, date_val)
+            din_n = count_for(df_din, site, reg, date_val)
+            if dej_n <= 0 and din_n <= 0:
+                continue
+
+            y -= 14
+            c.setFont("Helvetica-Bold", 9)
+            c.drawString(x0, y, f"{reg} —  Déj {dej_n} / Dîn {din_n}")
+
+            # Déjeuner
+            y -= 12
+            c.setFont("Helvetica-Bold", 9)
+            c.drawString(x0 + 12, y, "Déjeuner")
+            y -= 12
+            c.setFont("Helvetica", 9)
+
+            reg_norm = _norm(reg)
+            if is_mixe_lisse(reg):
+                c.drawString(x0 + 30, y, f"• Quantité mixé/lissé à livrer : {dej_n}")
+                y -= 12
+            else:
+                lines = menu_lines.get((date_val, "Déjeuner", reg))
+                if not lines:
+                    # fallback: try best-match by token overlap
+                    target = set(reg_norm.split())
+                    best = None
+                    best_score = -1
+                    for (d, repas, rlabel), lns in menu_lines.items():
+                        if d != date_val or repas != "Déjeuner":
+                            continue
+                        score = len(target & set(_norm(rlabel).split()))
+                        if score > best_score:
+                            best_score = score
+                            best = lns
+                    lines = best
+                lines = lines or ["Menu non détaillé (mixé/lissé)"]
+                for ln in lines:
+                    ensure_space(14)
+                    y = _draw_bullet(x0 + 30, y, ln, max_width, font_size=9, leading=11)
+
+            # Dîner
+            y -= 6
+            c.setFont("Helvetica-Bold", 9)
+            c.drawString(x0 + 12, y, "Dîner")
+            y -= 12
+            c.setFont("Helvetica", 9)
+            if is_mixe_lisse(reg):
+                c.drawString(x0 + 30, y, f"• Quantité mixé/lissé à livrer : {din_n}")
+                y -= 12
+            else:
+                lines = menu_lines.get((date_val, "Dîner", reg))
+                if not lines:
+                    target = set(reg_norm.split())
+                    best = None
+                    best_score = -1
+                    for (d, repas, rlabel), lns in menu_lines.items():
+                        if d != date_val or repas != "Dîner":
+                            continue
+                        score = len(target & set(_norm(rlabel).split()))
+                        if score > best_score:
+                            best_score = score
+                            best = lns
+                    lines = best
+                lines = lines or ["Menu non détaillé (mixé/lissé)"]
+                for ln in lines:
+                    ensure_space(14)
+                    y = _draw_bullet(x0 + 30, y, ln, max_width, font_size=9, leading=11)
+
+            # Space between regimes
+            y -= 6
+
+        # Footer signatures
+        c.setLineWidth(1)
+        c.line(x0, 46, W - x0, 46)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(x0, 30, "Chauffeur (signature) : ____________________")
+        c.drawString(W / 2 + 20, 30, "Réception (signature) : ____________________")
+
+    for site in sites:
+        for d in all_dates:
+            day = _dayname(d)
+            tot_dej = _site_day_total(planning.get("dejeuner"), site, day)
+            tot_din = _site_day_total(planning.get("diner"), site, day)
+            # Ne pas sortir de BL si aucune consommation ce jour-là
+            if (tot_dej + tot_din) <= 0:
+                continue
+            draw_page(display_site_name(site), d)
+            c.showPage()
+
+    c.save()
+
+
+def make_production_summary(df_planning: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate planning fabrication by Regime only (no site),
+    returning long format: Jour, Regime, Nb
+    """
+    if df_planning is None or df_planning.empty:
+        return pd.DataFrame(columns=["Jour", "Regime", "Nb"])
+
+    long = df_planning.melt(
+        id_vars=["Site", "Regime"],
+        value_vars=DAY_NAMES,
+        var_name="Jour",
+        value_name="Nb",
+    )
+    long["Nb"] = pd.to_numeric(long["Nb"], errors="coerce").fillna(0).astype(int)
+
+    long["Regime"] = long["Regime"].apply(normalize_regime_label)
+
+    out = long.groupby(["Jour", "Regime"], as_index=False)["Nb"].sum()
+    out["Nb"] = out["Nb"].astype(int)
+    return out
+
+
+def make_production_pivot(df_planning: pd.DataFrame) -> pd.DataFrame:
+    """Pivot table for production (more readable than long format).
+
+    - Rows: Régimes
+    - Columns: Lundi..Dimanche (+ Total)
+    - Values: Somme des effectifs
+    """
+    if df_planning is None or df_planning.empty:
+        cols = ["Regime", *DAY_NAMES, "Total"]
+        return pd.DataFrame(columns=cols)
+
+    long = make_production_summary(df_planning)
+    if long.empty:
+        cols = ["Regime", *DAY_NAMES, "Total"]
+        return pd.DataFrame(columns=cols)
+
+    pivot = (
+        long.pivot_table(index="Regime", columns="Jour", values="Nb", aggfunc="sum", fill_value=0)
+        .reindex(columns=DAY_NAMES, fill_value=0)
+        .reset_index()
+    )
+    pivot["Total"] = pivot[DAY_NAMES].sum(axis=1).astype(int)
+
+    # Add total row
+    total_row = {"Regime": "TOTAL"}
+    for j in DAY_NAMES:
+        total_row[j] = int(pivot[j].sum())
+    total_row["Total"] = int(pivot["Total"].sum())
+    pivot = pd.concat([pivot, pd.DataFrame([total_row])], ignore_index=True)
+
+    # Ensure ints
+    for j in DAY_NAMES + ["Total"]:
+        pivot[j] = pd.to_numeric(pivot[j], errors="coerce").fillna(0).astype(int)
+
+    return pivot
+
 
 _SAUCE_QUALIFIERS = [
     "vinaigrette",
@@ -785,19 +1317,36 @@ _SAUCE_QUALIFIERS = [
 
 
 def normalize_produit_for_grouping(produit: str) -> str:
+    """Normalize a dish/product name to a *base* name for grouping.
+
+    Example:
+      "macédoine vinaigrette" + "macédoine mayonnaise" -> "macédoine"
+      "Macédoine vinaigrette + Macédoine mayonnaise" -> "Macédoine"
+
+    Heuristics (kept intentionally simple & safe):
+    - Keep the left part before '+'
+    - Remove content in parentheses
+    - Remove trailing sauce/variant qualifiers (vinaigrette, mayonnaise, ...)
+    """
     s = clean_text(produit)
     if not s:
         return ""
+    # Keep left side of explicit combinations
     s = re.split(r"\s*\+\s*", s, maxsplit=1)[0].strip()
+    # Remove parentheses
     s = re.sub(r"\([^)]*\)", "", s).strip()
 
     low = s.lower()
+    # remove 'sauce ...'
     low = re.sub(r"\bsauce\b\s+.*$", "", low).strip()
+    # remove trailing known qualifiers
     for q in _SAUCE_QUALIFIERS:
+        # remove if it appears as a whole word and is not the only word
         if re.search(rf"\b{re.escape(q)}\b", low) and len(low.split()) > 1:
             low = re.sub(rf"\b{re.escape(q)}\b.*$", "", low).strip()
             break
 
+    # Rebuild with original casing approximated (title case for first char)
     out = low
     out = re.sub(r"\s+", " ", out).strip(" -;,:/")
     if not out:
@@ -806,7 +1355,15 @@ def normalize_produit_for_grouping(produit: str) -> str:
 
 
 def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuItem]) -> pd.DataFrame:
-    # (identique à ta version — je ne touche pas ici)
+    """Build a production-friendly "bon de commande".
+
+    Règles demandées:
+    - Pas de colonne "Régime".
+    - Colonnes attendues: Jour(s), Typologie, Produit, Effectif, Coefficient, Quantité.
+    - Les commandes doivent être regroupées par *produit de base* même sur des jours différents
+      (ex: "macédoine vinaigrette" + "macédoine mayonnaise" => "macédoine").
+    """
+
     def norm_reg(s: str) -> str:
         s = (s or "").lower()
         s = (
@@ -823,6 +1380,7 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
         s = re.sub(r"\s+", " ", s).strip()
         return s
 
+    # ---- counts from planning: Repas + Jour + Regime ----
     records = []
     for repas_key, repas_label in [("dejeuner", "Déjeuner"), ("diner", "Dîner")]:
         df = planning.get(repas_key)
@@ -846,6 +1404,7 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
 
     counts = pd.DataFrame(records)
     if counts.empty:
+        # still return menu with 0 pax
         menu_df = pd.DataFrame(
             [
                 {
@@ -882,6 +1441,7 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
     planning_keys = counts[["Regime_planning", "reg_key_planning"]].drop_duplicates().to_dict("records")
 
     def best_match_planning_key(menu_key: str) -> Optional[str]:
+        """Return reg_key_planning that best matches menu_key."""
         if not menu_key:
             return None
         mtoks = set(menu_key.split())
@@ -897,6 +1457,7 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
             return None
         return best_key
 
+    # ---- menu df ----
     menu_df = pd.DataFrame(
         [
             {
@@ -912,6 +1473,7 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
         ]
     )
 
+    # Map menu -> planning key, then merge on that key
     menu_df["reg_key_planning"] = menu_df["reg_key_menu"].apply(best_match_planning_key)
 
     merged = menu_df.merge(
@@ -923,6 +1485,7 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
     merged["Nb_personnes"] = merged["Nb_personnes"].fillna(0).astype(int)
     merged["Coefficient"] = 1.0
 
+    # We keep the menu label as "Regime" (what the user sees), but you could also keep planning regime.
     base = merged[
         ["Date", "Jour", "Repas", "Categorie", "Produit", "Nb_personnes", "Coefficient"]
     ].rename(
@@ -933,6 +1496,7 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
     base["Produit_base"] = base["Produit"].apply(normalize_produit_for_grouping)
     base["Quantité"] = (base["Effectif"] * base["Coefficient"]).round().astype(int)
 
+    # Group across days (and across regimes implicitly)
     grouped = (
         base.groupby(["Repas", "Typologie", "Produit_base", "Coefficient"], as_index=False)
         .agg(
@@ -955,115 +1519,53 @@ def export_excel(
     prod_din: pd.DataFrame,
     out_path: str,
 ) -> None:
-    import pandas as pd
-    import openpyxl
-    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-    from openpyxl.worksheet.datavalidation import DataValidation
-    from openpyxl.utils import get_column_letter
-    from openpyxl.workbook.defined_name import DefinedName
+    """Export the deliverables into one Excel file with 3 sheets.
 
-    # --- Base DF ---
-    bc = bon_commande.copy() if isinstance(bon_commande, pd.DataFrame) else pd.DataFrame()
-
-    # Harmonise accents/alias éventuels
-    if "Quantite" in bc.columns and "Quantité" not in bc.columns:
-        bc = bc.rename(columns={"Quantite": "Quantité"})
-    if "Unite" in bc.columns and "Unité" not in bc.columns:
-        bc = bc.rename(columns={"Unite": "Unité"})
-
-    # Colonnes attendues
-    for col, default in {
-        "Fournisseur": "Sysco",
-        "Unité": "",          # sera calculé par formule
-        "Coefficient": 1.0,
-        "Quantité": "",
-        "Effectif": 0,
-    }.items():
-        if col not in bc.columns:
-            bc[col] = default
-
-    bc["Fournisseur"] = bc["Fournisseur"].fillna("").astype(str).str.strip()
-    bc.loc[bc["Fournisseur"] == "", "Fournisseur"] = "Sysco"
-    bc["Coefficient"] = pd.to_numeric(bc["Coefficient"], errors="coerce").fillna(1.0)
-
-    # --- Listes (coefficients + fournisseurs) ---
-    coef_kg = [0.1, 0.2, 0.25, 0.3]
-    coef_unit = [1, 0.17, 0.04, 0.08]
-    coef_all = coef_kg + coef_unit
-
-    suppliers_default = ["Sysco", "Domafrais", "Cercle Vert"]
-    suppliers_present = [s for s in bc["Fournisseur"].dropna().astype(str).str.strip().tolist() if s]
-    suppliers = []
-    for s in suppliers_default + suppliers_present:
-        if s and s not in suppliers:
-            suppliers.append(s)
-
+    Objectif: conserver une bonne lisibilité (mise en forme basique type "table"):
+    - En-têtes en gras, fond gris clair
+    - Bordures fines, retour à la ligne, gel de la 1ère ligne
+    - Auto-filter + ajustement des largeurs de colonnes
+    """
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-        bc.to_excel(writer, sheet_name="Bon de commande", index=False)
+        bon_commande.to_excel(writer, sheet_name="Bon de commande", index=False)
 
-        # --- Pivot prod inchangé ---
         def _pivot_prod(long_df: pd.DataFrame) -> pd.DataFrame:
             if long_df is None or long_df.empty:
                 return pd.DataFrame(columns=["Regime"] + DAY_NAMES + ["Total semaine"])
             df = long_df.copy()
+            # normalise colonnes attendues
             if "Nb" not in df.columns:
-                for cand in ["Nb_personnes", "Nombre", "Quantite", "Quantité"]:
+                # fallback si autre nom
+                for cand in ["Nb_personnes", "Nombre", "Quantite"]:
                     if cand in df.columns:
                         df = df.rename(columns={cand: "Nb"})
                         break
+            # pivot
             piv = df.pivot_table(index="Regime", columns="Jour", values="Nb", aggfunc="sum", fill_value=0)
+            # assure colonnes jours
             for d in DAY_NAMES:
                 if d not in piv.columns:
                     piv[d] = 0
             piv = piv[DAY_NAMES]
             piv["Total semaine"] = piv.sum(axis=1)
-            piv = piv[piv["Total semaine"] > 0].reset_index()
-            total_row = pd.DataFrame(
-                [["TOTAL JOUR"] + [int(piv[d].sum()) for d in DAY_NAMES] + [int(piv["Total semaine"].sum())]],
-                columns=["Regime"] + DAY_NAMES + ["Total semaine"],
-            )
-            return pd.concat([piv, total_row], ignore_index=True)
+            piv = piv[piv["Total semaine"] > 0]
+            piv = piv.reset_index()
+            # ligne total jour
+            total_row = pd.DataFrame([["TOTAL JOUR"] + [int(piv[d].sum()) for d in DAY_NAMES] + [int(piv["Total semaine"].sum())]], columns=["Regime"] + DAY_NAMES + ["Total semaine"])
+            out = pd.concat([piv, total_row], ignore_index=True)
+            return out
 
-        _pivot_prod(prod_dej).to_excel(writer, sheet_name="Déjeuner", index=False)
-        _pivot_prod(prod_din).to_excel(writer, sheet_name="Dîner", index=False)
+        dej_piv = _pivot_prod(prod_dej)
+        din_piv = _pivot_prod(prod_din)
+
+        dej_piv.to_excel(writer, sheet_name="Déjeuner", index=False)
+        din_piv.to_excel(writer, sheet_name="Dîner", index=False)
 
         wb = writer.book
-
-        # --- Feuille Listes cachée ---
-        ws_lists = wb["Listes"] if "Listes" in wb.sheetnames else wb.create_sheet("Listes")
-        # reset
-        if ws_lists.max_row > 1:
-            ws_lists.delete_rows(1, ws_lists.max_row)
-
-        # A: COEF_ALL, C: COEF_KG, E: SUPPLIERS
-        ws_lists["A1"].value = "COEF_ALL"
-        for i, v in enumerate(coef_all, start=2):
-            ws_lists.cell(row=i, column=1).value = float(v)
-
-        ws_lists["C1"].value = "COEF_KG"
-        for i, v in enumerate(coef_kg, start=2):
-            ws_lists.cell(row=i, column=3).value = float(v)
-
-        ws_lists["E1"].value = "SUPPLIERS"
-        for i, v in enumerate(suppliers, start=2):
-            ws_lists.cell(row=i, column=5).value = v
-
-        # Plages nommées robustes
-        def _upsert_defined_name(name: str, refers_to: str):
-            to_remove = [dn for dn in wb.defined_names.definedName if getattr(dn, "name", None) == name]
-            for dn in to_remove:
-                wb.defined_names.definedName.remove(dn)
-            wb.defined_names.append(DefinedName(name=name, attr_text=refers_to))
-
-        _upsert_defined_name("COEF_ALL", "'Listes'!$A$2:$A$%d" % (len(coef_all) + 1))
-        _upsert_defined_name("COEF_KG", "'Listes'!$C$2:$C$%d" % (len(coef_kg) + 1))
-        _upsert_defined_name("SUPPLIERS", "'Listes'!$E$2:$E$%d" % (len(suppliers) + 1))
-
-        ws_lists.sheet_state = "hidden"
-
+	
         ws_bc = wb["Bon de commande"]
 
-        # --- repérage colonnes ---
+        # repérage des colonnes par leur nom (robuste à l'ordre)
         headers = {}
         for c in range(1, ws_bc.max_column + 1):
             v = ws_bc.cell(row=1, column=c).value
@@ -1073,47 +1575,18 @@ def export_excel(
         col_eff = headers.get("effectif")
         col_coef = headers.get("coefficient")
         col_qty = headers.get("quantité") or headers.get("quantite")
-        col_unit = headers.get("unité") or headers.get("unite")
-        col_supplier = headers.get("fournisseur")
 
-        max_row = ws_bc.max_row
+        if col_eff and col_coef and col_qty:
+            eff_letter = openpyxl.utils.get_column_letter(col_eff)
+            coef_letter = openpyxl.utils.get_column_letter(col_coef)
 
-        # --- Validations Excel (listes déroulantes) ---
-        if col_supplier:
-            sup_letter = get_column_letter(col_supplier)
-            dv_sup = DataValidation(type="list", formula1="=SUPPLIERS", allow_blank=True)
-            ws_bc.add_data_validation(dv_sup)
-            dv_sup.add(f"{sup_letter}2:{sup_letter}{max_row}")
+            for r in range(2, ws_bc.max_row + 1):
+                ws_bc.cell(
+                    row=r,
+                    column=col_qty
+                ).value = f"=ROUND({eff_letter}{r}*{coef_letter}{r},0)"
 
-        if col_coef:
-            coef_letter = get_column_letter(col_coef)
-            dv_coef = DataValidation(type="list", formula1="=COEF_ALL", allow_blank=True)
-            ws_bc.add_data_validation(dv_coef)
-            dv_coef.add(f"{coef_letter}2:{coef_letter}{max_row}")
 
-        # --- Unité auto selon coefficient ---
-        if col_unit and col_coef:
-            coef_letter = get_column_letter(col_coef)
-            unit_letter = get_column_letter(col_unit)
-            for r in range(2, max_row + 1):
-                ws_bc.cell(row=r, column=col_unit).value = (
-                    f'=IF(ISBLANK({coef_letter}{r}),"",'
-                    f'IF(ISNUMBER(MATCH({coef_letter}{r},COEF_KG,0)),"Kg","Unité"))'
-                )
-
-        # --- Quantité formule ---
-        if col_eff and col_coef and col_qty and col_unit:
-            eff_letter = get_column_letter(col_eff)
-            coef_letter = get_column_letter(col_coef)
-            unit_letter = get_column_letter(col_unit)
-            for r in range(2, max_row + 1):
-                ws_bc.cell(row=r, column=col_qty).value = (
-                    f'=IF(OR({eff_letter}{r}="",{coef_letter}{r}=""),"",'
-                    f'IF({unit_letter}{r}="Kg",ROUND({eff_letter}{r}*{coef_letter}{r},3),'
-                    f'ROUND({eff_letter}{r}*{coef_letter}{r},0)))'
-                )
-
-        # --- Mise en forme (ta version) ---
         thin = Side(style="thin", color="9E9E9E")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
         header_fill = PatternFill("solid", fgColor="EDEDED")
@@ -1125,6 +1598,7 @@ def export_excel(
 
         for name in ["Bon de commande", "Déjeuner", "Dîner"]:
             ws = wb[name]
+
             header_row = 1
             if name in ("Déjeuner", "Dîner"):
                 ws.insert_rows(1)
@@ -1141,10 +1615,12 @@ def export_excel(
             else:
                 ws.freeze_panes = "A2"
 
-            max_row_ws = ws.max_row
-            max_col_ws = ws.max_column
+            # Apply styles + borders
+            max_row = ws.max_row
+            max_col = ws.max_column
 
-            for c in range(1, max_col_ws + 1):
+            # Header row
+            for c in range(1, max_col + 1):
                 cell = ws.cell(row=header_row, column=c)
                 cell.font = header_font
                 cell.fill = header_fill
@@ -1153,16 +1629,63 @@ def export_excel(
 
             ws.row_dimensions[header_row].height = 24
 
-            for r in range(header_row + 1, max_row_ws + 1):
+            # Body
+            for r in range(header_row + 1, max_row + 1):
                 ws.row_dimensions[r].height = 18
-                for c in range(1, max_col_ws + 1):
+                for c in range(1, max_col + 1):
                     cell = ws.cell(row=r, column=c)
-                    cell.alignment = cell_align_center if (name in ("Déjeuner", "Dîner") and c >= 2) else cell_align
+                    # Pivot sheets: numeric columns centered
+                    if name in ("Déjeuner", "Dîner") and c >= 2:
+                        cell.alignment = cell_align_center
+                    else:
+                        cell.alignment = cell_align
                     cell.border = border
+
+                # Banded rows for readability
                 if r % 2 == 0:
-                    for c in range(1, max_col_ws + 1):
+                    for c in range(1, max_col + 1):
                         ws.cell(row=r, column=c).fill = band_fill
 
-            ws.auto_filter.ref = f"A{header_row}:{get_column_letter(max_col_ws)}{max_row_ws}"
+            # Emphasize first column and TOTAL row for pivot sheets
+            if name in ("Déjeuner", "Dîner"):
+                for r in range(header_row + 1, max_row + 1):
+                    ws.cell(row=r, column=1).font = Font(bold=True)
+                # TOTAL row (last row)
+                if max_row >= 2 and str(ws.cell(row=max_row, column=1).value).strip().upper() == "TOTAL":
+                    for c in range(1, max_col + 1):
+                        ws.cell(row=max_row, column=c).font = Font(bold=True)
+                        ws.cell(row=max_row, column=c).fill = PatternFill("solid", fgColor="E0E0E0")
+
+            # Auto-filter
+            ws.auto_filter.ref = f"A{header_row}:{openpyxl.utils.get_column_letter(max_col)}{max_row}"
+
+            # Column widths (after styling)
+            # IMPORTANT: after we add a merged title row (Déjeuner/Dîner),
+            # the first row contains MergedCell objects in columns > A.
+            # Those cells don't always expose `column_letter`, so we compute
+            # the column letter from the index instead.
+            for c_idx in range(1, max_col + 1):
+                col_letter = openpyxl.utils.get_column_letter(c_idx)
+                max_len = 0
+                # Use a bounded scan for performance
+                for r_idx in range(1, min(max_row, 400) + 1):
+                    cell = ws.cell(row=r_idx, column=c_idx)
+                    if cell.value is None:
+                        continue
+                    max_len = max(max_len, len(str(cell.value)))
+                # keep sheets readable
+                ws.column_dimensions[col_letter].width = min(max(max_len + 2, 10), 60)
+
+            # Tighter, consistent widths for pivot sheets
+            if name in ("Déjeuner", "Dîner"):
+                # Regime column
+                ws.column_dimensions["A"].width = 34
+                # Day columns
+                for idx, day in enumerate(DAY_NAMES, start=2):
+                    ws.column_dimensions[openpyxl.utils.get_column_letter(idx)].width = 12
+                # Total column
+                ws.column_dimensions[openpyxl.utils.get_column_letter(2 + len(DAY_NAMES))].width = 12
+
+            # Page setup (simple)
             ws.page_setup.fitToWidth = 1
             ws.page_setup.fitToHeight = 0
