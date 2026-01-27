@@ -1359,7 +1359,8 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
 
     Règles demandées:
     - Pas de colonne "Régime".
-    - Colonnes attendues: Jour(s), Typologie, Produit, Effectif, Coefficient, Quantité.
+    - Colonnes attendues: Jour(s), Repas, Typologie, Produit, Effectif, Coefficient, Quantité,
+      Unité, Fournisseur.
     - Les commandes doivent être regroupées par *produit de base* même sur des jours différents
       (ex: "macédoine vinaigrette" + "macédoine mayonnaise" => "macédoine").
     """
@@ -1434,9 +1435,11 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
             )
             .rename(columns={"Jour": "Jour(s)", "Produit_base": "Produit"})
         )
-        return grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Effectif", "Coefficient", "Quantité"]].sort_values(
-            ["Repas", "Typologie", "Produit"]
-        ).reset_index(drop=True)
+        grouped = grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Effectif", "Coefficient", "Quantité"]]
+        # colonnes ajoutées (éditables ensuite)
+        grouped["Unité"] = "unité"
+        grouped["Fournisseur"] = ""
+        return grouped.sort_values(["Repas", "Typologie", "Produit"]).reset_index(drop=True)
 
     planning_keys = counts[["Regime_planning", "reg_key_planning"]].drop_duplicates().to_dict("records")
 
@@ -1510,6 +1513,8 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
     )
 
     grouped = grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Effectif", "Coefficient", "Quantité"]]
+    grouped["Unité"] = "unité"
+    grouped["Fournisseur"] = ""
     return grouped.sort_values(["Repas", "Typologie", "Produit"]).reset_index(drop=True)
 
 
@@ -1565,6 +1570,34 @@ def export_excel(
 	
         ws_bc = wb["Bon de commande"]
 
+        # -------------------------------------------------
+        # Listes éditables (coefficients / unités / fournisseurs)
+        # -> sert aux menus déroulants dans Excel
+        # -------------------------------------------------
+        try:
+            from src.config_store import load_coefficients, load_units, load_suppliers
+
+            coeffs = load_coefficients()
+            units = load_units()
+            suppliers = load_suppliers()
+            supplier_names = [s.get("name", "").strip() for s in suppliers if s.get("name", "").strip()]
+        except Exception:
+            coeffs = [1.0]
+            units = ["unité"]
+            supplier_names = []
+
+        ws_lists = wb.create_sheet("Listes")
+        ws_lists["A1"].value = "Coefficients"
+        ws_lists["B1"].value = "Unités"
+        ws_lists["C1"].value = "Fournisseurs"
+        for i, v in enumerate(coeffs, start=2):
+            ws_lists.cell(row=i, column=1).value = float(v)
+        for i, v in enumerate(units, start=2):
+            ws_lists.cell(row=i, column=2).value = str(v)
+        for i, v in enumerate(supplier_names, start=2):
+            ws_lists.cell(row=i, column=3).value = str(v)
+        ws_lists.sheet_state = "hidden"
+
         # repérage des colonnes par leur nom (robuste à l'ordre)
         headers = {}
         for c in range(1, ws_bc.max_column + 1):
@@ -1575,6 +1608,8 @@ def export_excel(
         col_eff = headers.get("effectif")
         col_coef = headers.get("coefficient")
         col_qty = headers.get("quantité") or headers.get("quantite")
+        col_unit = headers.get("unité") or headers.get("unite")
+        col_sup = headers.get("fournisseur")
 
         if col_eff and col_coef and col_qty:
             eff_letter = openpyxl.utils.get_column_letter(col_eff)
@@ -1585,6 +1620,31 @@ def export_excel(
                     row=r,
                     column=col_qty
                 ).value = f"=ROUND({eff_letter}{r}*{coef_letter}{r},0)"
+
+        # Menus déroulants (data validation)
+        try:
+            from openpyxl.worksheet.datavalidation import DataValidation
+            from openpyxl.utils import get_column_letter
+
+            if col_coef and len(coeffs) > 0:
+                rng = f"Listes!$A$2:$A${len(coeffs)+1}"
+                dv = DataValidation(type="list", formula1=f"={rng}", allow_blank=True)
+                ws_bc.add_data_validation(dv)
+                dv.add(f"{get_column_letter(col_coef)}2:{get_column_letter(col_coef)}{ws_bc.max_row}")
+
+            if col_unit and len(units) > 0:
+                rng = f"Listes!$B$2:$B${len(units)+1}"
+                dv = DataValidation(type="list", formula1=f"={rng}", allow_blank=True)
+                ws_bc.add_data_validation(dv)
+                dv.add(f"{get_column_letter(col_unit)}2:{get_column_letter(col_unit)}{ws_bc.max_row}")
+
+            if col_sup and len(supplier_names) > 0:
+                rng = f"Listes!$C$2:$C${len(supplier_names)+1}"
+                dv = DataValidation(type="list", formula1=f"={rng}", allow_blank=True)
+                ws_bc.add_data_validation(dv)
+                dv.add(f"{get_column_letter(col_sup)}2:{get_column_letter(col_sup)}{ws_bc.max_row}")
+        except Exception:
+            pass
 
 
         thin = Side(style="thin", color="9E9E9E")
