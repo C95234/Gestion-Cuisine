@@ -128,7 +128,7 @@ try:
     menu_path = _save_uploaded_file(menu_file, suffix=".xlsx")
 
     # Parse planning (openpyxl accepte aussi un file-like ; on garde ton comportement)
-    planning = parse_planning_fabrication(planning_file)
+    planning = parse_planning_fabrication(planning_path)
 
     # Optionnel : feuille mixé/lissé (si présente)
     mix_planning = {"dejeuner": pd.DataFrame(), "diner": pd.DataFrame()}
@@ -472,13 +472,15 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                 for i, up in enumerate(batch_files):
                     w_mon = batch_monday + dt.timedelta(days=7 * i)
 
-                    # Parse fabrication (openpyxl accepte aussi le file-like)
-                    plan_i = parse_planning_fabrication(up)
+                    # Sauvegarde le fichier uploadé (nécessaire pour relire 2 fois le classeur)
+                    tmp_path_i = _save_uploaded_file(up, suffix=".xlsx")
+
+                    # Parse fabrication
+                    plan_i = parse_planning_fabrication(tmp_path_i)
 
                     # Mixé/Lissé : nécessite un path (on passe par un temp)
                     mix_i = {"dejeuner": pd.DataFrame(), "diner": pd.DataFrame()}
                     try:
-                        tmp_path_i = _save_uploaded_file(up, suffix=".xlsx")
                         mix_i = parse_planning_mixe_lisse(tmp_path_i)
                     except Exception:
                         pass
