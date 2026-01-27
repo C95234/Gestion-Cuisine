@@ -141,11 +141,7 @@ def _detect_meats(dish_texts: List[str]) -> List[str]:
     return meats[:3]
 
 
-def _fill_meat_section(
-    ws: Worksheet,
-    meat_entries: List[str],
-    meat_origin_ref: Optional[Dict[str, Tuple[str, str, str]]] = None,
-) -> None:
+def _fill_meat_section(ws: Worksheet, meat_entries: List[str]) -> None:
     for r in MEAT_ENTRY_ROWS:
         ws[f"B{r}"].value = None
         ws[f"C{r}"].value = None
@@ -155,23 +151,10 @@ def _fill_meat_section(
         r = MEAT_ENTRY_ROWS[idx]
         ws[f"B{r}"].value = entry
 
-        if meat_origin_ref:
-            k = normalize_key(entry)
-            org = meat_origin_ref.get(k)
-            if org:
-                naissance, elevage, abattage = org
-                if naissance:
-                    ws[f"C{r}"].value = naissance
-                if elevage:
-                    ws[f"H{r}"].value = elevage
-                if abattage:
-                    ws[f"N{r}"].value = abattage
-
 
 def fill_allergen_workbook(
     menus_by_day: Dict[date, Dict[str, Dict[str, Dict[str, str]]]],
     allergen_ref_key_to_allergens: Dict[str, Set[str]],
-    meat_origin_ref: Optional[Dict[str, Tuple[str, str, str]]] = None,
     template_dir: str,
     out_path: str,
 ) -> Tuple[str, List[str]]:
@@ -194,7 +177,7 @@ def fill_allergen_workbook(
 
             _clear_values_only(ws, "B4:B27")
             _clear_values_only(ws, "C4:R27")
-            _fill_meat_section(ws, [], meat_origin_ref)
+            _fill_meat_section(ws, [])
 
             meat_candidates: List[str] = []
 
@@ -220,7 +203,7 @@ def fill_allergen_workbook(
                 meat_candidates.append(plat)
 
             meats = _detect_meats(meat_candidates)
-            _fill_meat_section(ws, meats, meat_origin_ref)
+            _fill_meat_section(ws, meats)
 
     out_wb.save(out_path)
 
