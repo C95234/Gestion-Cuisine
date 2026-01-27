@@ -8,7 +8,6 @@ from typing import List, Dict, Any, Optional, Union
 
 @dataclass
 class Coefficient:
-    """Coefficient de conversion pour calculer les quantités."""
     name: str
     value: float
     default_unit: str = "unité"
@@ -16,7 +15,6 @@ class Coefficient:
 
 @dataclass
 class Supplier:
-    """Fournisseur mémorisé."""
     name: str
     customer_code: str = ""
     coord1: str = ""
@@ -27,30 +25,28 @@ class ConfigStore:
     """Stockage persistant (JSON) des listes utilisées pour les bons de commande."""
 
     def __init__(self, base_dir: Optional[Union[Path, str]] = None) -> None:
-        candidates: List[Path] = []
-
-        if base_dir is not None:
-            candidates.append(Path(base_dir))
-
-        # Dossier projet (local)
-        candidates.append(Path(__file__).resolve().parent.parent / "data" / "config")
-
-        # HOME (souvent writable sur Streamlit Cloud)
-        candidates.append(Path.home() / ".gestion-cuisine" / "config")
-
-        # Secours (toujours writable mais non persistant)
-        candidates.append(Path("/tmp") / "gestion-cuisine" / "config")
-
-        self.base_dir = self._pick_writable_dir(candidates)
+        self.base_dir = self._init_base_dir(base_dir)
 
         self._coeff_path = self.base_dir / "coefficients.json"
         self._units_path = self.base_dir / "units.json"
         self._suppliers_path = self.base_dir / "suppliers.json"
 
-        self._ensure_defaults()
+        # IMPORTANT : aucune exception ne doit sortir d'ici
+        try:
+            self._ensure_defaults()
+        except Exception:
+            pass
 
-    def _pick_writable_dir(self, candidates: List[Path]) -> Path:
-        last_err: Optional[Exception] = None
+    # ---------------- Dossier d'écriture sûr ----------------
+    def _init_base_dir(self, base_dir: Optional[Union[Path, str]]) -> Path:
+        candidates: List[Path] = []
+
+        if base_dir is not None:
+            candidates.append(Path(base_dir))
+
+        candidates.append(Path.home() / ".gestion-cuisine" / "config")
+        candidates.append(Path("/tmp") / "gestion-cuisine" / "config")
+
         for p in candidates:
             try:
                 p.mkdir(parents=True, exist_ok=True)
@@ -61,23 +57,25 @@ class ConfigStore:
                 except Exception:
                     pass
                 return p
-            except Exception as e:
-                last_err = e
+            except Exception:
                 continue
-        raise RuntimeError(
-            "Impossible de trouver un dossier d'écriture pour la config: %r" % (last_err,)
-        )
 
+        # dernier recours (ne plante jamais l'import)
+        fallback = Path("/tmp") / "gc_config_fallback"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+    # ---------------- Valeurs par défaut ----------------
     def _ensure_defaults(self) -> None:
         if not self._units_path.exists():
             self.save_units(["kg", "g", "L", "mL", "unité", "pièce", "barquette"])
+
         if not self._coeff_path.exists():
-            self.save_coefficients(
-                [
-                    Coefficient(name="1", value=1.0, default_unit="unité"),
-                    Coefficient(name="1 kg", value=1.0, default_unit="kg"),
-                ]
-            )
+            self.save_coefficients([
+                Coefficient(name="1", value=1.0, default_unit="unité"),
+                Coefficient(name="1 kg", value=1.0, default_unit="kg"),
+            ])
+
         if not self._suppliers_path.exists():
             self.save_suppliers([])
 
@@ -87,7 +85,7 @@ class ConfigStore:
 
     def save_units(self, units: List[str]) -> None:
         units = [str(u).strip() for u in units if str(u).strip()]
-        self._save_json(self._units_path, units)
+        self._safe_save(self._units_path, units)
 
     # -------- Coefficients --------
     def load_coefficients(self) -> List[Coefficient]:
@@ -111,9 +109,7 @@ class ConfigStore:
         payload: List[Dict[str, Any]] = []
         for c in coeffs:
             if isinstance(c, Coefficient):
-                payload.append(
-                    {"name": c.name, "value": float(c.value), "default_unit": c.default_unit}
-                )
+                payload.append({"name": c.name, "value": float(c.value), "default_unit": c.default_unit})
             elif isinstance(c, dict):
                 name = str(c.get("name", "")).strip()
                 if not name:
@@ -124,7 +120,7 @@ class ConfigStore:
                     value = 1.0
                 default_unit = str(c.get("default_unit", "unité") or "unité").strip()
                 payload.append({"name": name, "value": value, "default_unit": default_unit})
-        self._save_json(self._coeff_path, payload)
+        self._safe_save(self._coeff_path, payload)
 
     # -------- Suppliers --------
     def load_suppliers(self) -> List[Supplier]:
@@ -150,27 +146,23 @@ class ConfigStore:
         payload: List[Dict[str, Any]] = []
         for s in suppliers:
             if isinstance(s, Supplier):
-                payload.append(
-                    {
-                        "name": s.name,
-                        "customer_code": s.customer_code,
-                        "coord1": s.coord1,
-                        "coord2": s.coord2,
-                    }
-                )
+                payload.append({
+                    "name": s.name,
+                    "customer_code": s.customer_code,
+                    "coord1": s.coord1,
+                    "coord2": s.coord2,
+                })
             elif isinstance(s, dict):
                 name = str(s.get("name", "")).strip()
                 if not name:
                     continue
-                payload.append(
-                    {
-                        "name": name,
-                        "customer_code": str(s.get("customer_code", "") or ""),
-                        "coord1": str(s.get("coord1", "") or ""),
-                        "coord2": str(s.get("coord2", "") or ""),
-                    }
-                )
-        self._save_json(self._suppliers_path, payload)
+                payload.append({
+                    "name": name,
+                    "customer_code": str(s.get("customer_code", "") or ""),
+                    "coord1": str(s.get("coord1", "") or ""),
+                    "coord2": str(s.get("coord2", "") or ""),
+                })
+        self._safe_save(self._suppliers_path, payload)
 
     # -------- Utils --------
     def _load_json_list(self, path: Path, default: List[Any]) -> List[Any]:
@@ -182,5 +174,8 @@ class ConfigStore:
         except Exception:
             return default
 
-    def _save_json(self, path: Path, data: Any) -> None:
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    def _safe_save(self, path: Path, data: Any) -> None:
+        try:
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
