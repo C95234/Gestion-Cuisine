@@ -9,7 +9,6 @@ from typing import List, Dict, Any
 @dataclass
 class Coefficient:
     """Coefficient de conversion pour calculer les quantités."""
-
     name: str
     value: float
     default_unit: str = "unité"
@@ -18,7 +17,6 @@ class Coefficient:
 @dataclass
 class Supplier:
     """Fournisseur mémorisé."""
-
     name: str
     customer_code: str = ""
     coord1: str = ""
@@ -29,11 +27,22 @@ class ConfigStore:
     """Stockage persistant (JSON) des listes utilisées pour les bons de commande."""
 
     def __init__(self, base_dir: Path | str | None = None) -> None:
-        # base_dir = dossier du projet (par défaut) /data/config
-        if base_dir is None:
-            base_dir = Path(__file__).resolve().parent.parent / "data" / "config"
-        self.base_dir = Path(base_dir)
-        self.base_dir.mkdir(parents=True, exist_ok=True)
+        candidates = []
+
+        # 1️⃣ Si on fournit un dossier explicitement
+        if base_dir is not None:
+            candidates.append(Path(base_dir))
+
+        # 2️⃣ Dossier projet (local)
+        candidates.append(Path(__file__).resolve().parent.parent / "data" / "config")
+
+        # 3️⃣ HOME (souvent writable sur Streamlit Cloud)
+        candidates.append(Path.home() / ".gestion-cuisine" / "config")
+
+        # 4️⃣ /tmp (toujours writable mais non persistant)
+        candidates.append(Path("/tmp") / "gestion-cuisine" / "config")
+
+        self.base_dir = self._pick_writable_dir(candidates)
 
         self._coeff_path = self.base_dir / "coefficients.json"
         self._units_path = self.base_dir / "units.json"
@@ -41,16 +50,29 @@ class ConfigStore:
 
         self._ensure_defaults()
 
+    # 🔧 Choisit automatiquement un dossier où l'écriture est possible
+    def _pick_writable_dir(self, candidates: list[Path]) -> Path:
+        last_err: Exception | None = None
+        for p in candidates:
+            try:
+                p.mkdir(parents=True, exist_ok=True)
+                test = p / ".write_test"
+                test.write_text("ok", encoding="utf-8")
+                test.unlink(missing_ok=True)
+                return p
+            except Exception as e:
+                last_err = e
+                continue
+        raise RuntimeError(f"Impossible de trouver un dossier d'écriture pour la config: {last_err}")
+
     def _ensure_defaults(self) -> None:
         if not self._units_path.exists():
-            self.save_units(["kg", "g", "L", "mL", "unité", "pièce", "barquette"])  # sane defaults
+            self.save_units(["kg", "g", "L", "mL", "unité", "pièce", "barquette"])
         if not self._coeff_path.exists():
-            self.save_coefficients(
-                [
-                    Coefficient(name="1", value=1.0, default_unit="unité"),
-                    Coefficient(name="1 kg", value=1.0, default_unit="kg"),
-                ]
-            )
+            self.save_coefficients([
+                Coefficient(name="1", value=1.0, default_unit="unité"),
+                Coefficient(name="1 kg", value=1.0, default_unit="kg"),
+            ])
         if not self._suppliers_path.exists():
             self.save_suppliers([])
 
