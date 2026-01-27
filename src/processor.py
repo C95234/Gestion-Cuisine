@@ -1557,11 +1557,89 @@ def export_excel(
       - Déjeuner (pivot)
       - Dîner (pivot)
 
-    ✅ Correction métier:
-    - Le coefficient = multiplicateur (name -> value)
-    - L'unité du coefficient est IGNOREE.
-    - L'unité d'achat = colonne "Unité" du bon (Excel), point.
+    Correctifs importants:
+    - Les listes (coeffs/unités/fournisseurs) sont nettoyées (lignes vides supprimées).
+    - La formule Quantité est robuste aux coefficients saisis en texte/nombre, avec espaces.
+      => TRIM + TEXT(...,"@") avant lookup.
+    - Si pas de coefficient fourni, on force "1" => 1.0.
     """
+
+    # ----------------- Nettoyage des listes -----------------
+    def _clean_coeffs(raw: Optional[List[Dict[str, object]]]) -> List[Dict[str, object]]:
+        out: List[Dict[str, object]] = []
+        if not raw:
+            raw = []
+        for c in raw:
+            name = str((c or {}).get("name", "")).strip()
+            if not name:
+                continue
+            try:
+                val = float((c or {}).get("value", 1.0))
+            except Exception:
+                val = 1.0
+            out.append({"name": name, "value": val})
+        # force un coeff "1"
+        if not any(x["name"] == "1" for x in out):
+            out.insert(0, {"name": "1", "value": 1.0})
+        # dédoublonne par name (garde le 1er)
+        seen = set()
+        uniq = []
+        for x in out:
+            if x["name"] in seen:
+                continue
+            seen.add(x["name"])
+            uniq.append(x)
+        return uniq
+
+    def _clean_units(raw: Optional[List[str]]) -> List[str]:
+        if not raw:
+            return ["kg", "g", "L", "mL", "unité", "pièce"]
+        out = []
+        for u in raw:
+            s = str(u).strip()
+            if s:
+                out.append(s)
+        if not out:
+            out = ["kg", "g", "L", "mL", "unité", "pièce"]
+        # dédoublonne
+        seen = set()
+        uniq = []
+        for u in out:
+            if u in seen:
+                continue
+            seen.add(u)
+            uniq.append(u)
+        return uniq
+
+    def _clean_suppliers(raw: Optional[List[Dict[str, str]]]) -> List[Dict[str, str]]:
+        if not raw:
+            return []
+        out = []
+        for s in raw:
+            name = str((s or {}).get("name", "")).strip()
+            if not name:
+                continue
+            out.append(
+                {
+                    "name": name,
+                    "customer_code": str((s or {}).get("customer_code", "") or ""),
+                    "coord1": str((s or {}).get("coord1", "") or ""),
+                    "coord2": str((s or {}).get("coord2", "") or ""),
+                }
+            )
+        # dédoublonne par name
+        seen = set()
+        uniq = []
+        for x in out:
+            if x["name"] in seen:
+                continue
+            seen.add(x["name"])
+            uniq.append(x)
+        return uniq
+
+    coefficients = _clean_coeffs(coefficients)
+    units = _clean_units(units)
+    suppliers = _clean_suppliers(suppliers)
 
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         bon_commande.to_excel(writer, sheet_name="Bon de commande", index=False)
@@ -1569,6 +1647,7 @@ def export_excel(
         def _pivot_prod(long_df: pd.DataFrame) -> pd.DataFrame:
             if long_df is None or long_df.empty:
                 return pd.DataFrame(columns=["Regime"] + DAY_NAMES + ["Total semaine"])
+
             df = long_df.copy()
             if "Nb" not in df.columns:
                 for cand in ["Nb_personnes", "Nombre", "Quantite"]:
@@ -1576,7 +1655,9 @@ def export_excel(
                         df = df.rename(columns={cand: "Nb"})
                         break
 
-            piv = df.pivot_table(index="Regime", columns="Jour", values="Nb", aggfunc="sum", fill_value=0)
+            piv = df.pivot_table(
+                index="Regime", columns="Jour", values="Nb", aggfunc="sum", fill_value=0
+            )
             for d in DAY_NAMES:
                 if d not in piv.columns:
                     piv[d] = 0
@@ -1598,34 +1679,18 @@ def export_excel(
 
         wb = writer.book
 
-        # ----------------- Listes pour menus déroulants -----------------
-        if coefficients is None:
-            # accepte {name, value, default_unit} mais on ignore default_unit
-            coefficients = [{"name": "1", "value": 1.0}]
-
-        if units is None:
-            units = ["kg", "g", "L", "mL", "unité", "pièce"]
-
-        if suppliers is None:
-            suppliers = []
-
-        # Feuille cachée "Listes"
+        # ----------------- Feuille cachée "Listes" -----------------
         if "Listes" in wb.sheetnames:
             ws_list = wb["Listes"]
             ws_list.delete_rows(1, ws_list.max_row)
         else:
             ws_list = wb.create_sheet("Listes")
 
-        # ✅ On ne met PLUS "Unité défaut" (source du mélange)
         ws_list["A1"].value = "Coefficient"
         ws_list["B1"].value = "Valeur"
-
         for i, c in enumerate(coefficients, start=2):
-            ws_list.cell(row=i, column=1).value = str(c.get("name", "")).strip()
-            try:
-                ws_list.cell(row=i, column=2).value = float(c.get("value", 1.0))
-            except Exception:
-                ws_list.cell(row=i, column=2).value = 1.0
+            ws_list.cell(row=i, column=1).value = str(c["name"]).strip()
+            ws_list.cell(row=i, column=2).value = float(c["value"])
 
         ws_list["E1"].value = "Unités"
         for i, u in enumerate(units, start=2):
@@ -1636,7 +1701,7 @@ def export_excel(
         ws_list["I1"].value = "Coordonnée 1"
         ws_list["J1"].value = "Coordonnée 2"
         for i, s in enumerate(suppliers, start=2):
-            ws_list.cell(row=i, column=7).value = str(s.get("name", "")).strip()
+            ws_list.cell(row=i, column=7).value = str(s["name"]).strip()
             ws_list.cell(row=i, column=8).value = str(s.get("customer_code", "") or "")
             ws_list.cell(row=i, column=9).value = str(s.get("coord1", "") or "")
             ws_list.cell(row=i, column=10).value = str(s.get("coord2", "") or "")
@@ -1645,7 +1710,7 @@ def export_excel(
 
         ws_bc = wb["Bon de commande"]
 
-        # repérage des colonnes par leur nom (robuste à l'ordre)
+        # ----------------- Repérage des colonnes -----------------
         headers = {}
         for c in range(1, ws_bc.max_column + 1):
             v = ws_bc.cell(row=1, column=c).value
@@ -1658,10 +1723,10 @@ def export_excel(
         col_sup = headers.get("fournisseur")
         col_qty = headers.get("quantité") or headers.get("quantite")
 
-        # Plages pour validations (Listes)
-        n_coef = max(0, len(coefficients))
-        n_units = max(0, len(units))
-        n_sup = max(0, len(suppliers))
+        # ----------------- Validations (listes déroulantes) -----------------
+        n_coef = len(coefficients)
+        n_units = len(units)
+        n_sup = len(suppliers)
 
         coef_range = f"=Listes!$A$2:$A${1 + n_coef}" if n_coef else '"1"'
         unit_range = f"=Listes!$E$2:$E${1 + n_units}" if n_units else '"unité"'
@@ -1691,16 +1756,27 @@ def export_excel(
                 f"{openpyxl.utils.get_column_letter(col_sup)}{ws_bc.max_row}"
             )
 
-        # ✅ Quantité = Effectif * valeur(coefficient). L'unité vient UNIQUEMENT de la colonne "Unité".
+        # ----------------- Formule Quantité -----------------
+        # PROBLÈME d'origine: VLOOKUP ne match pas si:
+        # - coefficient en cellule = nombre (1.5) mais liste = texte ("1.5")
+        # - espaces / caractères invisibles
+        # => on lookup sur TRIM(TEXT(coef,"@"))
+        #
+        # Quantité = ROUND(Effectif * ValeurCoeff, 0)
         if col_eff and col_coef and col_qty:
             eff_letter = openpyxl.utils.get_column_letter(col_eff)
             coef_letter = openpyxl.utils.get_column_letter(col_coef)
 
-            # VLOOKUP sur Listes!A:B (Coefficient -> Valeur)
+            lookup_table = f"Listes!$A$2:$B${1 + n_coef}"
+
             for r in range(2, ws_bc.max_row + 1):
+                # TRIM(TEXT(...,"@")) rend robuste texte/nombre + retire espaces
+                coef_key = f"TRIM(TEXT({coef_letter}{r},\"@\"))"
                 ws_bc.cell(row=r, column=col_qty).value = (
-                    f"=ROUND({eff_letter}{r}*IFERROR(VLOOKUP({coef_letter}{r},Listes!$A$2:$B${1+n_coef},2,FALSE),1),0)"
+                    f"=ROUND({eff_letter}{r}*IFERROR(VLOOKUP({coef_key},{lookup_table},2,FALSE),1),0)"
                 )
+                # optionnel: format numérique propre
+                ws_bc.cell(row=r, column=col_qty).number_format = "0"
 
         # ----------------- Styles -----------------
         thin = Side(style="thin", color="9E9E9E")
