@@ -1526,6 +1526,8 @@ def export_excel(
     - Bordures fines, retour à la ligne, gel de la 1ère ligne
     - Auto-filter + ajustement des largeurs de colonnes
     """
+    from openpyxl.worksheet.datavalidation import DataValidation
+
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         bon_commande.to_excel(writer, sheet_name="Bon de commande", index=False)
 
@@ -1563,6 +1565,47 @@ def export_excel(
 
         wb = writer.book
 	
+        # --- Listes (cachées) pour validations ---
+        # On crée une feuille "Listes" si besoin, pour gérer : fournisseurs / unités / coefficients
+        if "Listes" not in wb.sheetnames:
+            ws_lists = wb.create_sheet("Listes")
+        else:
+            ws_lists = wb["Listes"]
+
+        # Remplissage listes (avec valeurs par défaut si l'app n'a pas déjà enrichi le bon)
+        # Fournisseurs : on prend les valeurs distinctes présentes dans la colonne si elle existe.
+        ws_lists["A1"].value = "Unités"
+        ws_lists["A2"].value = "Kg"
+        ws_lists["A3"].value = "Unité"
+
+        ws_lists["C1"].value = "Coefficients_Kg"
+        for i, v in enumerate([0.1, 0.2, 0.25, 0.3], start=2):
+            ws_lists.cell(row=i, column=3).value = v
+
+        ws_lists["E1"].value = "Coefficients_Unite"
+        for i, v in enumerate([1, 0.17, 0.04, 0.08], start=2):
+            ws_lists.cell(row=i, column=5).value = v
+
+        # Fournisseurs (liste éditable côté app) : si colonne présente, on extrait ses valeurs
+        ws_lists["G1"].value = "Fournisseurs"
+        suppliers = []
+        if isinstance(bon_commande, pd.DataFrame) and ("Fournisseur" in bon_commande.columns):
+            suppliers = [str(x).strip() for x in bon_commande["Fournisseur"].dropna().unique().tolist() if str(x).strip()]
+        if not suppliers:
+            suppliers = ["Sysco", "Domafrais", "Cercle Vert"]
+        for i, v in enumerate(suppliers, start=2):
+            ws_lists.cell(row=i, column=7).value = v
+
+        # Noms de plages pour listes (obligatoire pour l'INDIRECT)
+        # Unités => A2:A3 ; COEF_KG => C2:C5 ; COEF_UNITE => E2:E5 ; SUPPLIERS => G2:G...
+        wb.create_named_range("UNITS", ws_lists, f"$A$2:$A$3")
+        wb.create_named_range("COEF_KG", ws_lists, f"$C$2:$C$5")
+        wb.create_named_range("COEF_UNITE", ws_lists, f"$E$2:$E$5")
+        wb.create_named_range("SUPPLIERS", ws_lists, f"$G$2:$G${len(suppliers)+1}")
+
+        # Cache la feuille (sans la supprimer)
+        ws_lists.sheet_state = "hidden"
+
         ws_bc = wb["Bon de commande"]
 
         # repérage des colonnes par leur nom (robuste à l'ordre)
@@ -1575,16 +1618,52 @@ def export_excel(
         col_eff = headers.get("effectif")
         col_coef = headers.get("coefficient")
         col_qty = headers.get("quantité") or headers.get("quantite")
+        col_unit = headers.get("unité") or headers.get("unite")
+        col_supplier = headers.get("fournisseur")
 
+        # --- Validations Excel (défilement / liste déroulante) ---
+        # Unités
+        if col_unit:
+            dv_unit = DataValidation(type="list", formula1="=UNITS", allow_blank=True)
+            ws_bc.add_data_validation(dv_unit)
+            for r in range(2, ws_bc.max_row + 1):
+                dv_unit.add(ws_bc.cell(row=r, column=col_unit))
+
+        # Fournisseurs
+        if col_supplier:
+            dv_sup = DataValidation(type="list", formula1="=SUPPLIERS", allow_blank=True)
+            ws_bc.add_data_validation(dv_sup)
+            for r in range(2, ws_bc.max_row + 1):
+                dv_sup.add(ws_bc.cell(row=r, column=col_supplier))
+
+        # Coefficient dépendant de l'unité : =INDIRECT(IF($Unite="Kg","COEF_KG","COEF_UNITE"))
+        if col_coef and col_unit:
+            unit_letter = openpyxl.utils.get_column_letter(col_unit)
+            dv_coef = DataValidation(
+                type="list",
+                formula1=f"=INDIRECT(IF(${unit_letter}2=\"Kg\",\"COEF_KG\",\"COEF_UNITE\"))",
+                allow_blank=True,
+            )
+            ws_bc.add_data_validation(dv_coef)
+            for r in range(2, ws_bc.max_row + 1):
+                # La formule du DV est relative à la ligne 2 ; Excel la "déroule" par ligne.
+                dv_coef.add(ws_bc.cell(row=r, column=col_coef))
+
+        # --- Formule Quantité ---
         if col_eff and col_coef and col_qty:
             eff_letter = openpyxl.utils.get_column_letter(col_eff)
             coef_letter = openpyxl.utils.get_column_letter(col_coef)
 
+            unit_letter = openpyxl.utils.get_column_letter(col_unit) if col_unit else None
+
             for r in range(2, ws_bc.max_row + 1):
-                ws_bc.cell(
-                    row=r,
-                    column=col_qty
-                ).value = f"=ROUND({eff_letter}{r}*{coef_letter}{r},0)"
+                if unit_letter:
+                    # Kg => 3 décimales ; Unité => entier
+                    ws_bc.cell(row=r, column=col_qty).value = (
+                        f"=IF({unit_letter}{r}=\"Kg\",ROUND({eff_letter}{r}*{coef_letter}{r},3),ROUND({eff_letter}{r}*{coef_letter}{r},0))"
+                    )
+                else:
+                    ws_bc.cell(row=r, column=col_qty).value = f"=ROUND({eff_letter}{r}*{coef_letter}{r},0)"
 
 
         thin = Side(style="thin", color="9E9E9E")
