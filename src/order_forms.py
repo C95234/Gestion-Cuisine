@@ -1,47 +1,109 @@
-"""Génération de bons de commande par fournisseur (PDF).
-
-But : après édition de l'Excel par l'utilisateur, il peut ré-uploader le fichier
-et l'application produit un PDF par fournisseur, avec des zones à remplir au stylo
-(dates de livraison, montant attendu).
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+import openpyxl
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+
+
+@dataclass
+class SupplierInfo:
+    name: str
+    customer_code: str = ""
+    coord1: str = ""
+    coord2: str = ""
+
+
+def _supplier_lookup(suppliers: List[Dict[str, str]]) -> Dict[str, SupplierInfo]:
+    out: Dict[str, SupplierInfo] = {}
+    for s in suppliers or []:
+        name = str(s.get("name", "") or "").strip()
+        if not name:
+            continue
+        out[name] = SupplierInfo(
+            name=name,
+            customer_code=str(s.get("customer_code", "") or ""),
+            coord1=str(s.get("coord1", "") or ""),
+            coord2=str(s.get("coord2", "") or ""),
+        )
+    return out
+
+
+def group_lines_for_order(df: pd.DataFrame) -> pd.DataFrame:
+    """Applique la fusion/renommage via la colonne 'Libellé'.
+
+    - si 'Libellé' existe: groupby sur (Repas, Typologie, Libellé, Coefficient, Unité)
+    - sinon: groupby sur Produit
+    - somme des Effectif + Quantité
+    - concat des jours
+    """
+    if df is None or df.empty:
+        return df
+
+    d = df.copy()
+    # normalise colonnes
+    for c in ["Jour(s)", "Jour", "Repas", "Typologie", "Produit", "Libellé", "Effectif", "Coefficient", "Unité", "Fournisseur", "Quantité"]:
+        if c not in d.columns:
+            d[c] = "" if c not in ("Effectif", "Quantité") else 0
+
+    d["Jour(s)"] = d["Jour(s)"].fillna(d["Jour"].astype(str))
+    d["Libellé"] = d["Libellé"].fillna("")
+    if (d["Libellé"].astype(str).str.strip() == "").all():
+        d["Libellé"] = d["Produit"].astype(str)
+
+    d["Effectif"] = pd.to_numeric(d["Effectif"], errors="coerce").fillna(0).astype(int)
+    d["Quantité"] = pd.to_numeric(d["Quantité"], errors="coerce").fillna(0).astype(int)
+
+    grouped = (
+        d.groupby(
+            ["Repas", "Typologie", "Libellé", "Coefficient", "Unité"],
+            as_index=False,
+        )
+        .agg(
+            {
+                "Jour(s)": lambda s: ", ".join(sorted({str(x).strip() for x in s if str(x).strip()})),
+                "Effectif": "sum",
+                "Quantité": "sum",
+            }
+        )
+        .rename(columns={"Libellé": "Produit"})
+    )
+    # ordre
+    cols = ["Jour(s)", "Repas", "Typologie", "Produit", "Effectif", "Coefficient", "Unité", "Quantité"]
+    return grouped[cols].sort_values(["Repas", "Typologie", "Produit"]).reset_index(drop=True)
 
 
 def export_orders_per_supplier_excel(
-    bon_commande_df: pd.DataFrame,
-    out_xlsx_path: str,
-    options: Optional[SupplierOrderPDFOptions] = None,
-    supplier_infos: Optional[Dict[str, Dict[str, str]]] = None,
-) -> List[str]:
-    """Crée un classeur Excel : 1 feuille par fournisseur, avec un en-tête.
+    bon_df: pd.DataFrame,
+    out_path: str,
+    *,
+    suppliers: Optional[List[Dict[str, str]]] = None,
+) -> None:
+    """Crée un classeur Excel avec 1 feuille par fournisseur."""
+    suppliers = suppliers or []
+    sup_map = _supplier_lookup(suppliers)
 
-    Retourne la liste des fournisseurs présents.
-    """
-    import openpyxl
-    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-
-    opt = options or SupplierOrderPDFOptions()
-    df = bon_commande_df.copy()
-
-    for col in [opt.supplier_col, opt.qty_col, opt.unit_col, opt.product_col]:
-        if col not in df.columns:
-            raise ValueError(f"Colonne manquante dans le bon de commande: '{col}'")
-    df[opt.supplier_col] = df[opt.supplier_col].fillna("").astype(str).str.strip()
-    df = df[df[opt.supplier_col] != ""]
+    df = bon_df.copy() if bon_df is not None else pd.DataFrame()
     if df.empty:
-        raise ValueError("Aucun fournisseur renseigné dans le bon de commande.")
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Aucun fournisseur"
+        ws["A1"].value = "Aucune ligne dans le bon de commande"
+        wb.save(out_path)
+        return
 
-    suppliers = sorted(df[opt.supplier_col].unique().tolist())
-    supplier_infos = supplier_infos or {}
+    if "Fournisseur" not in df.columns:
+        df["Fournisseur"] = ""
+
+    df["Fournisseur"] = df["Fournisseur"].fillna("").astype(str).str.strip()
 
     wb = openpyxl.Workbook()
-    # Supprime la feuille par défaut
+    # supprime la feuille par défaut
     wb.remove(wb.active)
 
     thin = Side(style="thin", color="9E9E9E")
@@ -51,209 +113,131 @@ def export_orders_per_supplier_excel(
     header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
     cell_align = Alignment(horizontal="left", vertical="top", wrap_text=True)
 
-    def _safe_sheet_name(name: str) -> str:
-        # Excel: max 31 chars, pas de []:*?/\
-        s = "".join(ch for ch in name if ch not in "[]:*?/\\")
-        s = s.strip() or "Fournisseur"
-        s = s[:31]
-        # unique
-        base = s
-        k = 2
-        while s in wb.sheetnames:
-            suf = f"_{k}"
-            s = (base[: 31 - len(suf)] + suf)[:31]
-            k += 1
-        return s
+    for sup_name, part in df.groupby("Fournisseur", dropna=False):
+        sup_name = str(sup_name or "").strip() or "(sans fournisseur)"
+        ws = wb.create_sheet(title=sup_name[:31])
 
-    for supplier in suppliers:
-        sh = wb.create_sheet(_safe_sheet_name(supplier))
+        info = sup_map.get(sup_name, SupplierInfo(name=sup_name))
+        # en-tête
+        ws.merge_cells("A1:H1")
+        ws["A1"].value = f"BON DE COMMANDE – {info.name}"
+        ws["A1"].font = Font(bold=True, size=14)
+        ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[1].height = 24
 
-        info = supplier_infos.get(supplier, {}) or {}
-        code_client = (info.get("code_client") or "").strip()
-        coord1 = (info.get("coord1") or "").strip()
-        coord2 = (info.get("coord2") or "").strip()
+        ws["A2"].value = f"Code client : {info.customer_code}" if info.customer_code else ""
+        ws["A3"].value = info.coord1
+        ws["A4"].value = info.coord2
 
-        # En-tête
-        sh["A1"].value = f"{opt.title} — {supplier}"
-        sh["A1"].font = Font(bold=True, size=14)
-
-        r = 2
-        if code_client:
-            sh[f"A{r}"].value = f"Code client : {code_client}"
-            r += 1
-        if coord1:
-            sh[f"A{r}"].value = coord1
-            r += 1
-        if coord2:
-            sh[f"A{r}"].value = coord2
-            r += 1
-
-        sh[f"A{r}"].value = "Date(s) de livraison : ________________________________"
-        r += 1
-        sh[f"A{r}"].value = "Montant attendu facture (€) : _________________________"
-        r += 2
-
-        start_row = r
-        sub = df[df[opt.supplier_col] == supplier].copy()
-        cols = [
-            c for c in [opt.days_col, opt.meal_col, opt.typology_col, opt.product_col, opt.qty_col, opt.unit_col]
-            if c in sub.columns
-        ]
-
-        # Table header
-        for j, col in enumerate(cols, start=1):
-            cell = sh.cell(row=start_row, column=j)
-            cell.value = col
+        # données (fusion via Libellé)
+        lines = group_lines_for_order(part)
+        start_row = 6
+        headers = list(lines.columns)
+        for c, h in enumerate(headers, start=1):
+            cell = ws.cell(row=start_row, column=c)
+            cell.value = h
             cell.font = header_font
             cell.fill = header_fill
             cell.alignment = header_align
             cell.border = border
 
-        # Rows
-        for i, (_, row) in enumerate(sub[cols].iterrows(), start=1):
-            for j, col in enumerate(cols, start=1):
-                cell = sh.cell(row=start_row + i, column=j)
-                val = row[col]
-                if pd.isna(val):
-                    val = ""
-                cell.value = str(val)
+        for r_idx, row in enumerate(lines.itertuples(index=False), start=start_row + 1):
+            for c_idx, val in enumerate(row, start=1):
+                cell = ws.cell(row=r_idx, column=c_idx)
+                cell.value = val
                 cell.alignment = cell_align
                 cell.border = border
 
-        # Ajuste largeur simple
-        for j, col in enumerate(cols, start=1):
-            max_len = max([len(str(col))] + [len(str(v)) for v in sub[col].fillna("").astype(str).tolist()])
-            sh.column_dimensions[openpyxl.utils.get_column_letter(j)].width = min(max(10, max_len + 2), 45)
+        ws.freeze_panes = ws.cell(row=start_row + 1, column=1)
+        ws.auto_filter.ref = f"A{start_row}:{openpyxl.utils.get_column_letter(len(headers))}{start_row + len(lines)}"
 
-        sh.freeze_panes = sh["A" + str(start_row + 1)]
+        # largeurs
+        for col in range(1, len(headers) + 1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 18
+        ws.column_dimensions["A"].width = 20
+        ws.column_dimensions["D"].width = 34
 
-    wb.save(out_xlsx_path)
-    return suppliers
-
-
-@dataclass
-class SupplierOrderPDFOptions:
-    title: str = "Bon de commande"
-    supplier_col: str = "Fournisseur"
-    qty_col: str = "Quantité"
-    unit_col: str = "Unité"
-    product_col: str = "Produit"
-    meal_col: str = "Repas"
-    typology_col: str = "Typologie"
-    days_col: str = "Jour(s)"
+    wb.save(out_path)
 
 
 def export_orders_per_supplier_pdf(
-    bon_commande_df: pd.DataFrame,
+    bon_df: pd.DataFrame,
     out_pdf_path: str,
-    options: Optional[SupplierOrderPDFOptions] = None,
-    supplier_infos: Optional[Dict[str, Dict[str, str]]] = None,
-) -> List[str]:
-    """Crée un seul PDF multi-pages : 1 page par fournisseur.
+    *,
+    suppliers: Optional[List[Dict[str, str]]] = None,
+) -> None:
+    """Génère un PDF avec 1 page par fournisseur."""
+    suppliers = suppliers or []
+    sup_map = _supplier_lookup(suppliers)
 
-    Retourne la liste des fournisseurs présents.
-    """
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import mm
-    from reportlab.pdfgen import canvas
-    from reportlab.platypus import Table, TableStyle
-    from reportlab.lib import colors
-
-    opt = options or SupplierOrderPDFOptions()
-    df = bon_commande_df.copy()
-
-    # Normalisation basique
-    for col in [opt.supplier_col, opt.qty_col, opt.unit_col, opt.product_col]:
-        if col not in df.columns:
-            raise ValueError(f"Colonne manquante dans le bon de commande: '{col}'")
-    df[opt.supplier_col] = df[opt.supplier_col].fillna("").astype(str).str.strip()
-    df = df[df[opt.supplier_col] != ""]
+    df = bon_df.copy() if bon_df is not None else pd.DataFrame()
     if df.empty:
-        raise ValueError("Aucun fournisseur renseigné dans le bon de commande.")
+        c = canvas.Canvas(out_pdf_path, pagesize=A4)
+        c.drawString(40, 800, "Aucune ligne dans le bon de commande")
+        c.save()
+        return
 
-    suppliers = sorted(df[opt.supplier_col].unique().tolist())
+    if "Fournisseur" not in df.columns:
+        df["Fournisseur"] = ""
+    df["Fournisseur"] = df["Fournisseur"].fillna("").astype(str).str.strip()
 
     c = canvas.Canvas(out_pdf_path, pagesize=A4)
-    w, h = A4
+    width, height = A4
 
-    supplier_infos = supplier_infos or {}
+    for sup_name, part in df.groupby("Fournisseur", dropna=False):
+        sup_name = str(sup_name or "").strip() or "(sans fournisseur)"
+        info = sup_map.get(sup_name, SupplierInfo(name=sup_name))
 
-    def draw_header(supplier: str):
-        top = h - 18 * mm
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(18 * mm, top, f"{opt.title} — {supplier}")
+        # Header
+        y = height - 60
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(40, y, f"Bon de commande – {info.name}")
+        y -= 22
         c.setFont("Helvetica", 10)
-        info = supplier_infos.get(supplier, {}) or {}
-        code_client = (info.get("code_client") or "").strip()
-        coord1 = (info.get("coord1") or "").strip()
-        coord2 = (info.get("coord2") or "").strip()
+        if info.customer_code:
+            c.drawString(40, y, f"Code client : {info.customer_code}")
+            y -= 14
+        if info.coord1:
+            c.drawString(40, y, info.coord1)
+            y -= 14
+        if info.coord2:
+            c.drawString(40, y, info.coord2)
+            y -= 18
 
-        y = top - 8 * mm
-        if code_client:
-            c.drawString(18 * mm, y, f"Code client : {code_client}")
-            y -= 6 * mm
-        if coord1:
-            c.drawString(18 * mm, y, coord1)
-            y -= 5 * mm
-        if coord2:
-            c.drawString(18 * mm, y, coord2)
-            y -= 5 * mm
+        # Table
+        lines = group_lines_for_order(part)
+        headers = list(lines.columns)
+        cols = headers
+        # simple layout
+        col_widths = [70, 60, 80, 170, 55, 55, 55, 55]
+        x0 = 40
+        c.setFont("Helvetica-Bold", 9)
+        for i, h in enumerate(cols):
+            c.drawString(x0 + sum(col_widths[:i]) + 2, y, str(h))
+        y -= 14
+        c.setFont("Helvetica", 9)
+        for _, row in lines.iterrows():
+            if y < 60:
+                c.showPage()
+                y = height - 60
+                c.setFont("Helvetica-Bold", 16)
+                c.drawString(40, y, f"Bon de commande – {info.name}")
+                y -= 26
+                c.setFont("Helvetica-Bold", 9)
+                for i, h in enumerate(cols):
+                    c.drawString(x0 + sum(col_widths[:i]) + 2, y, str(h))
+                y -= 14
+                c.setFont("Helvetica", 9)
 
-        y -= 2 * mm
-        c.drawString(18 * mm, y, "Date(s) de livraison : ________________________________")
-        c.drawString(18 * mm, y - 6 * mm, "Montant attendu facture (€) : _________________________")
-        c.line(18 * mm, y - 10 * mm, w - 18 * mm, y - 10 * mm)
-        return y - 16 * mm
-
-    for supplier in suppliers:
-        y = draw_header(supplier)
-        sub = df[df[opt.supplier_col] == supplier].copy()
-
-        # Colonnes dans l'ordre (si présentes)
-        cols = [
-            c for c in [opt.days_col, opt.meal_col, opt.typology_col, opt.product_col, opt.qty_col, opt.unit_col]
-            if c in sub.columns
-        ]
-
-        table_data: List[List[str]] = [cols]
-        for _, row in sub[cols].iterrows():
-            out_row = []
-            for col in cols:
-                val = row[col]
-                if pd.isna(val):
-                    val = ""
-                out_row.append(str(val))
-            table_data.append(out_row)
-
-        # Table reportlab
-        table = Table(table_data, repeatRows=1)
-        table.setStyle(
-            TableStyle(
-                [
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 9),
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                    ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                    ("TOPPADDING", (0, 0), (-1, -1), 2),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-                ]
-            )
-        )
-
-        # Positionnement
-        avail_w = w - 36 * mm
-        avail_h = y - 18 * mm
-        tw, th = table.wrapOn(c, avail_w, avail_h)
-        if th > avail_h:
-            # Si trop long, on réduit un peu (fallback)
-            table.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 8)]))
-            tw, th = table.wrapOn(c, avail_w, avail_h)
-        table.drawOn(c, 18 * mm, y - th)
+            values = [row.get(h, "") for h in cols]
+            for i, v in enumerate(values):
+                text = str(v)
+                # tronque un peu
+                if len(text) > 28 and i == 3:
+                    text = text[:28] + "…"
+                c.drawString(x0 + sum(col_widths[:i]) + 2, y, text)
+            y -= 12
 
         c.showPage()
 
     c.save()
-    return suppliers
