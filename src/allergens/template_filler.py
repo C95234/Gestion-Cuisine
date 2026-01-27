@@ -171,9 +171,9 @@ def _fill_meat_section(
 def fill_allergen_workbook(
     menus_by_day: Dict[date, Dict[str, Dict[str, Dict[str, str]]]],
     allergen_ref_key_to_allergens: Dict[str, Set[str]],
-    meat_origin_ref: Optional[Dict[str, Tuple[str, str, str]]] = None,
     template_dir: str,
     out_path: str,
+    meat_origin_ref: Optional[Dict[str, Tuple[str, str, str]]] = None,
 ) -> Tuple[str, List[str]]:
     """Génère un classeur Excel au format EXACT du template, 1 feuille par service."""
     template_path = os.path.join(template_dir, "template_dejeuner.xlsx")
