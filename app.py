@@ -1,6 +1,13 @@
+import sys
+from pathlib import Path
+
+# --- Streamlit path bootstrap (robust imports & file paths) ---
+BASE_DIR = Path(__file__).parent
+sys.path.append(str(BASE_DIR))
+# --------------------------------------------------------------
+
 import streamlit as st
 import traceback
-from pathlib import Path
 import pandas as pd
 import datetime as dt
 
@@ -25,7 +32,7 @@ from src.billing import (
 from src.config_store import load_suppliers, save_suppliers
 from src.order_forms import export_orders_per_supplier_pdf
 
-# --- Nouveau : Allergènes (ajout sans modifier les fonctions existantes) ---
+# --- Allergènes ---
 from src.allergens.learner import learn_from_filled_allergen_workbook
 from src.allergens.generator import generate_allergen_workbook
 
@@ -55,7 +62,7 @@ def format_pivot_for_display(piv: pd.DataFrame) -> pd.DataFrame:
 def set_background():
     import base64
 
-    img = Path(__file__).parent / "assets" / "background.jpg"
+    img = BASE_DIR / "assets" / "background.jpg"
     if not img.exists():
         return
     b64 = base64.b64encode(img.read_bytes()).decode("utf-8")
@@ -203,6 +210,12 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
 
     with tab_bc:
         st.subheader("Bon de commande")
+
+        # ✅ Coefficients disponibles (utilisés dans l'app + cohérents avec l'Excel exporté)
+        COEFS_KG = [0.1, 0.2, 0.25, 0.3]
+        COEFS_UNITE = [1, 0.17, 0.04, 0.08]
+        COEFS_ALL = COEFS_KG + COEFS_UNITE
+
         bon = build_bon_commande(planning, menu_items)
 
         # --- Fournisseurs : liste éditable ---
@@ -220,11 +233,16 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                 st.success("Liste fournisseurs enregistrée.")
             suppliers = [l.strip() for l in txt.splitlines() if l.strip()] or suppliers
 
-        # Ajout des colonnes nécessaires aux listes déroulantes (sans toucher aux fonctions cœur)
+        # Ajout des colonnes nécessaires (sans toucher aux fonctions cœur)
+        # ✅ Par défaut : Coef=1 donc Unité (le plus fréquent)
         if "Unité" not in bon.columns:
-            bon.insert(len(bon.columns), "Unité", "Kg")
+            bon.insert(len(bon.columns), "Unité", "Unité")
         if "Fournisseur" not in bon.columns:
             bon.insert(len(bon.columns), "Fournisseur", suppliers[0] if suppliers else "")
+        if "Coefficient" in bon.columns:
+            bon["Coefficient"] = pd.to_numeric(bon["Coefficient"], errors="coerce").fillna(1.0)
+        else:
+            bon.insert(len(bon.columns), "Coefficient", 1.0)
 
         # --- Fusion de lignes (dans l'app) ---
         st.markdown("**Option : fusionner des lignes** (addition des quantités, renommage du produit)")
@@ -238,7 +256,9 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
             hide_index=True,
             num_rows="fixed",
             column_config={
-                "À_fusionner": st.column_config.CheckboxColumn("Fusionner", help="Coche les lignes à fusionner."),
+                "À_fusionner": st.column_config.CheckboxColumn(
+                    "Fusionner", help="Coche les lignes à fusionner."
+                ),
                 "Unité": st.column_config.SelectboxColumn(
                     "Unité",
                     options=["Kg", "Unité"],
@@ -249,13 +269,22 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                     options=suppliers,
                     help="Choisis le fournisseur (menu déroulant).",
                 ),
+                # ✅ IMPORTANT : coefficient en menu déroulant => plus de saisie manuelle
                 "Coefficient": st.column_config.SelectboxColumn(
                     "Coefficient",
-                    options=[0.1, 0.2, 0.25, 0.3, 1, 0.17, 0.04, 0.08],
-                    help="Choisis le coefficient (liste). Dans l'Excel, l'Unité se mettra automatiquement selon le coefficient.",
+                    options=COEFS_ALL,
+                    help="Choisis le coefficient (liste). L'unité se met à jour automatiquement.",
                 ),
             },
         )
+
+        # ✅ Unité auto en fonction du coefficient choisi (dans l'app)
+        df_tmp = pd.DataFrame(edited)
+        if "Coefficient" in df_tmp.columns and "Unité" in df_tmp.columns:
+            df_tmp["Coefficient"] = pd.to_numeric(df_tmp["Coefficient"], errors="coerce")
+            df_tmp.loc[df_tmp["Coefficient"].isin(COEFS_KG), "Unité"] = "Kg"
+            df_tmp.loc[df_tmp["Coefficient"].isin(COEFS_UNITE), "Unité"] = "Unité"
+        edited = df_tmp
 
         c_merge1, c_merge2, c_merge3 = st.columns([2, 2, 3])
         with c_merge1:
@@ -278,11 +307,12 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                 else:
                     keep = sel.iloc[0].copy()
                     keep["Produit"] = (new_name.strip() or str(keep.get("Produit", ""))).strip() or str(keep.get("Produit", ""))
+
                     for col in ["Effectif", "Quantité"]:
                         if col in df.columns:
                             keep[col] = float(sel[col].fillna(0).sum())
+
                     if "Jour(s)" in df.columns:
-                        # concat jours uniques
                         days = []
                         for v in sel["Jour(s)"].fillna("").astype(str).tolist():
                             for p in [x.strip() for x in v.split(",") if x.strip()]:
@@ -478,17 +508,12 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
             records["date"] = pd.to_datetime(records["date"]).dt.date
             months = sorted({(d.year, d.month) for d in records["date"]})
             month_labels = [f"{y}-{m:02d}" for (y, m) in months]
-            # Export produces a full-year workbook (Jan → Dec) for the most recent year.
-            # We keep the selector for information, but default to all months so users don't
-            # accidentally export only the last one.
-            choice = st.multiselect(
+            _ = st.multiselect(
                 "Mois présents (info)", options=month_labels, default=month_labels
             )
 
             if st.button("Générer le classeur Excel de facturation"):
-                # Always export the full year so the workbook can be used from Jan to Dec.
                 records_f = records
-
                 out_xlsx = _temp_out_path(".xlsx")
                 export_monthly_workbook(records_f, out_xlsx)
 
@@ -510,11 +535,8 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
             "L'apprentissage sert uniquement à **préremplir les croix (X)** à partir des classeurs de semaines précédentes que tu remplis."
         )
 
-        base_dir = Path(__file__).parent
-        template_dir = base_dir / "templates" / "allergen"
+        template_dir = BASE_DIR / "templates" / "allergen"
 
-        # CLOUD-SAFE : on évite de dépendre d'un fichier local persistant.
-        # On passe par upload / download du référentiel maître.
         c1, c2 = st.columns([2, 1])
         with c1:
             st.markdown("### 0) Référentiel maître (obligatoire)")
