@@ -4,42 +4,46 @@ from pathlib import Path
 import pandas as pd
 import datetime as dt
 
-from src.processor import (
-    parse_planning_fabrication,
-    parse_planning_mixe_lisse,
-    make_production_summary,
-    make_production_pivot,
-    parse_menu,
-    build_bon_commande,
-    export_excel,
-    export_bons_livraison_pdf,
-)
-
-# ✅ Remplacement : on "dé-masque" l'erreur réelle de Streamlit Cloud
+# ✅ DEBUG GLOBAL : on capture toute erreur d'import des modules "src"
 try:
+    from src.processor import (
+        parse_planning_fabrication,
+        parse_planning_mixe_lisse,
+        make_production_summary,
+        make_production_pivot,
+        parse_menu,
+        build_bon_commande,
+        export_excel,
+        export_bons_livraison_pdf,
+    )
+
     from src.config_store import ConfigStore
+
+    from src.order_forms import (
+        export_orders_per_supplier_excel,
+        export_orders_per_supplier_pdf,
+    )
+
+    from src.billing import (
+        planning_to_daily_totals,
+        mixe_lisse_to_daily_totals,
+        save_week,
+        load_records,
+        export_monthly_workbook,
+    )
+
+    from src.allergens.learner import learn_from_filled_allergen_workbook
+    from src.allergens.generator import generate_allergen_workbook
+
 except Exception as e:
-    st.error("Erreur d'import de ConfigStore (src/config_store.py)")
+    st.error("💥 Erreur lors d'un import (module src.*)")
+    st.write("**repr(e):**")
     st.code(repr(e))
+    st.write("**Trace complète :**")
     st.code(traceback.format_exc())
-    raise
-
-from src.order_forms import export_orders_per_supplier_excel, export_orders_per_supplier_pdf
-from src.billing import (
-    planning_to_daily_totals,
-    mixe_lisse_to_daily_totals,
-    save_week,
-    load_records,
-    export_monthly_workbook,
-)
-
-# --- Nouveau : Allergènes (ajout sans modifier les fonctions existantes) ---
-from src.allergens.learner import learn_from_filled_allergen_workbook
-from src.allergens.generator import generate_allergen_workbook
-
+    st.stop()  # 🔥 IMPORTANT : on STOPPE sans laisser Streamlit afficher l'écran redacted
 
 DAY_NAMES = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
-
 
 
 def format_pivot_for_display(piv: pd.DataFrame) -> pd.DataFrame:
