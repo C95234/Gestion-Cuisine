@@ -1,3 +1,11 @@
+import sys
+from pathlib import Path
+
+# --- Streamlit path bootstrap (robust imports & file paths) ---
+BASE_DIR = Path(__file__).parent
+sys.path.append(str(BASE_DIR))
+# --------------------------------------------------------------
+
 import streamlit as st
 import traceback
 from pathlib import Path
