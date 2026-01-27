@@ -22,6 +22,9 @@ from src.billing import (
     export_monthly_workbook,
 )
 
+from src.config_store import load_suppliers, save_suppliers
+from src.order_forms import export_orders_per_supplier_pdf
+
 # --- Nouveau : Allergènes (ajout sans modifier les fonctions existantes) ---
 from src.allergens.learner import learn_from_filled_allergen_workbook
 from src.allergens.generator import generate_allergen_workbook
@@ -201,18 +204,136 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
     with tab_bc:
         st.subheader("Bon de commande")
         bon = build_bon_commande(planning, menu_items)
-        st.dataframe(bon, use_container_width=True, hide_index=True)
 
-        if st.button("Générer Bon de commande (Excel)", type="primary"):
-            out_path = _temp_out_path(".xlsx")
-            export_excel(bon, prod_dej_long, prod_din_long, out_path)
-            with open(out_path, "rb") as f:
-                st.download_button(
-                    "Télécharger Bon de commande.xlsx",
-                    data=f,
-                    file_name="Bon de commande.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+        # --- Fournisseurs : liste éditable ---
+        with st.expander("⚙️ Gérer la liste des fournisseurs"):
+            suppliers = load_suppliers()
+            txt = st.text_area(
+                "1 fournisseur par ligne",
+                value="\n".join(suppliers),
+                height=120,
+                help="Tu peux ajouter/supprimer/renommer. La liste sert aux menus déroulants (Excel et app).",
+            )
+            if st.button("Enregistrer la liste", key="save_suppliers"):
+                new_list = [l.strip() for l in txt.splitlines() if l.strip()]
+                save_suppliers(new_list)
+                st.success("Liste fournisseurs enregistrée.")
+            suppliers = [l.strip() for l in txt.splitlines() if l.strip()] or suppliers
+
+        # Ajout des colonnes nécessaires aux listes déroulantes (sans toucher aux fonctions cœur)
+        if "Unité" not in bon.columns:
+            bon.insert(len(bon.columns), "Unité", "Kg")
+        if "Fournisseur" not in bon.columns:
+            bon.insert(len(bon.columns), "Fournisseur", suppliers[0] if suppliers else "")
+
+        # --- Fusion de lignes (dans l'app) ---
+        st.markdown("**Option : fusionner des lignes** (addition des quantités, renommage du produit)")
+        bon_edit = bon.copy()
+        if "À_fusionner" not in bon_edit.columns:
+            bon_edit.insert(0, "À_fusionner", False)
+
+        edited = st.data_editor(
+            bon_edit,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            column_config={
+                "À_fusionner": st.column_config.CheckboxColumn("Fusionner", help="Coche les lignes à fusionner."),
+                "Unité": st.column_config.SelectboxColumn(
+                    "Unité",
+                    options=["Kg", "Unité"],
+                    help="Détermine la liste de coefficients et l'arrondi de la quantité.",
+                ),
+                "Fournisseur": st.column_config.SelectboxColumn(
+                    "Fournisseur",
+                    options=suppliers,
+                    help="Choisis le fournisseur (menu déroulant).",
+                ),
+                "Coefficient": st.column_config.SelectboxColumn(
+                    "Coefficient",
+                    options=[0.1, 0.2, 0.25, 0.3, 1, 0.17, 0.04, 0.08],
+                    help="Choisis le coefficient (liste). Dans l'Excel, l'Unité se mettra automatiquement selon le coefficient.",
+                ),
+            },
+        )
+
+        c_merge1, c_merge2, c_merge3 = st.columns([2, 2, 3])
+        with c_merge1:
+            new_name = st.text_input("Nouveau nom produit (si fusion)", value="")
+        with c_merge2:
+            do_merge = st.button("Fusionner les lignes cochées", key="merge_rows")
+        with c_merge3:
+            st.caption("Règle : fusion uniquement si Repas/Typologie/Fournisseur/Unité/Coefficient identiques.")
+
+        if do_merge:
+            df = pd.DataFrame(edited)
+            sel = df[df["À_fusionner"] == True]
+            if sel.empty or len(sel) < 2:
+                st.warning("Coche au moins 2 lignes à fusionner.")
+            else:
+                key_cols = [c for c in ["Repas", "Typologie", "Fournisseur", "Unité", "Coefficient"] if c in df.columns]
+                n_groups = sel.groupby(key_cols).ngroups if key_cols else 0
+                if n_groups != 1:
+                    st.error("Les lignes cochées n'ont pas les mêmes Repas/Typologie/Fournisseur/Unité/Coefficient.")
+                else:
+                    keep = sel.iloc[0].copy()
+                    keep["Produit"] = (new_name.strip() or str(keep.get("Produit", ""))).strip() or str(keep.get("Produit", ""))
+                    for col in ["Effectif", "Quantité"]:
+                        if col in df.columns:
+                            keep[col] = float(sel[col].fillna(0).sum())
+                    if "Jour(s)" in df.columns:
+                        # concat jours uniques
+                        days = []
+                        for v in sel["Jour(s)"].fillna("").astype(str).tolist():
+                            for p in [x.strip() for x in v.split(",") if x.strip()]:
+                                if p not in days:
+                                    days.append(p)
+                        keep["Jour(s)"] = ", ".join(days)
+
+                    df_rest = df[df["À_fusionner"] != True].copy()
+                    df_out = pd.concat([df_rest, pd.DataFrame([keep])], ignore_index=True)
+                    df_out["À_fusionner"] = False
+                    st.success("Fusion effectuée.")
+                    edited = df_out
+
+        # Excel : on n'exporte pas la colonne UI "À_fusionner"
+        export_df = pd.DataFrame(edited).drop(columns=["À_fusionner"], errors="ignore")
+
+        cA, cB = st.columns([1, 1])
+        with cA:
+            if st.button("Générer Bon de commande (Excel)", type="primary"):
+                out_path = _temp_out_path(".xlsx")
+                export_excel(export_df, prod_dej_long, prod_din_long, out_path)
+                with open(out_path, "rb") as f:
+                    st.download_button(
+                        "Télécharger Bon de commande.xlsx",
+                        data=f,
+                        file_name="Bon de commande.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+
+        with cB:
+            st.markdown("**Après édition de l'Excel : imprimer un bon par fournisseur**")
+            filled = st.file_uploader(
+                "Ré-uploade ton Excel travaillé (Bon de commande.xlsx)",
+                type=["xlsx"],
+                key="filled_bc",
+            )
+            if filled is not None and st.button("Générer PDFs par fournisseur", key="pdf_by_supplier"):
+                try:
+                    tmp_in = _save_uploaded_file(filled, suffix=".xlsx")
+                    df_in = pd.read_excel(tmp_in, sheet_name="Bon de commande")
+                    out_pdf = _temp_out_path(".pdf")
+                    export_orders_per_supplier_pdf(df_in, out_pdf)
+                    with open(out_pdf, "rb") as f:
+                        st.download_button(
+                            "Télécharger Bons par fournisseur.pdf",
+                            data=f,
+                            file_name="Bons par fournisseur.pdf",
+                            mime="application/pdf",
+                        )
+                except Exception as e:
+                    st.error(f"Impossible de générer les PDFs : {e}")
 
     with tab_bl:
         st.subheader("Bons de livraison (PDF)")
