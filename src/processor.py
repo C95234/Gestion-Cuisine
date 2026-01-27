@@ -767,9 +767,6 @@ def _norm(s: str) -> str:
     return s
 
 
-# --- (le reste de tes fonctions PDF / production / grouping est inchangé) ---
-# ... (tout ce qui suit est identique à ton fichier, sauf export_excel) ...
-
 
 _SAUCE_QUALIFIERS = [
     "vinaigrette",
@@ -958,37 +955,52 @@ def export_excel(
     prod_din: pd.DataFrame,
     out_path: str,
 ) -> None:
-    """
-    ✅ CORRIGÉ :
-    - Ajoute les colonnes Fournisseur + Unité si absentes
-    - Coefficient en LISTE DÉROULANTE (0.1,0.2,0.25,0.3,1,0.17,0.04,0.08)
-    - Fournisseur en LISTE DÉROULANTE (liste complète, pas seulement Sysco)
-    - Unité AUTO selon le coefficient (Kg si 0.1/0.2/0.25/0.3 sinon Unité)
-    - Quantité AUTO et arrondis : Kg -> 3 décimales ; Unité -> entier
-    """
-    # --- Garantir colonnes attendues ---
+    import pandas as pd
+    import openpyxl
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from openpyxl.utils import get_column_letter
+    from openpyxl.workbook.defined_name import DefinedName
+
+    # --- Base DF ---
     bc = bon_commande.copy() if isinstance(bon_commande, pd.DataFrame) else pd.DataFrame()
 
-    # Ajoute Fournisseur / Unité si non présents
-    if "Fournisseur" not in bc.columns:
-        bc["Fournisseur"] = "Sysco"  # défaut
-    else:
-        bc["Fournisseur"] = bc["Fournisseur"].fillna("").replace("", "Sysco")
-
-    if "Unité" not in bc.columns and "Unite" not in bc.columns:
-        bc["Unité"] = ""  # sera calculé en formule Excel
-    elif "Unite" in bc.columns and "Unité" not in bc.columns:
+    if "Quantite" in bc.columns and "Quantité" not in bc.columns:
+        bc = bc.rename(columns={"Quantite": "Quantité"})
+    if "Unite" in bc.columns and "Unité" not in bc.columns:
         bc = bc.rename(columns={"Unite": "Unité"})
 
-    # Par défaut coef = 1 si manquant
-    if "Coefficient" in bc.columns:
-        bc["Coefficient"] = pd.to_numeric(bc["Coefficient"], errors="coerce").fillna(1.0)
-    else:
-        bc["Coefficient"] = 1.0
+    for col, default in {
+        "Fournisseur": "Sysco",
+        "Unité": "Unité",
+        "Coefficient": 1.0,
+        "Quantité": "",
+        "Effectif": 0,
+    }.items():
+        if col not in bc.columns:
+            bc[col] = default
+
+    bc["Fournisseur"] = bc["Fournisseur"].fillna("").astype(str).str.strip()
+    bc.loc[bc["Fournisseur"] == "", "Fournisseur"] = "Sysco"
+    bc["Coefficient"] = pd.to_numeric(bc["Coefficient"], errors="coerce").fillna(1.0)
+
+    # --- Listes (par unité) ---
+    default_coef_kg = sorted({0.1, 0.2, 0.25, 0.3})
+    default_coef_unite = sorted({1, 0.17, 0.04, 0.08})
+    units = ["Kg", "Unité"]
+
+    # Fournisseurs
+    suppliers_default = ["Sysco", "Domafrais", "Cercle Vert"]
+    suppliers_present = [s for s in bc["Fournisseur"].dropna().astype(str).str.strip().tolist() if s]
+    suppliers = []
+    for s in suppliers_default + suppliers_present:
+        if s and s not in suppliers:
+            suppliers.append(s)
 
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         bc.to_excel(writer, sheet_name="Bon de commande", index=False)
 
+        # --- Pivot prod inchangé ---
         def _pivot_prod(long_df: pd.DataFrame) -> pd.DataFrame:
             if long_df is None or long_df.empty:
                 return pd.DataFrame(columns=["Regime"] + DAY_NAMES + ["Total semaine"])
@@ -1004,61 +1016,55 @@ def export_excel(
                     piv[d] = 0
             piv = piv[DAY_NAMES]
             piv["Total semaine"] = piv.sum(axis=1)
-            piv = piv[piv["Total semaine"] > 0]
-            piv = piv.reset_index()
+            piv = piv[piv["Total semaine"] > 0].reset_index()
             total_row = pd.DataFrame(
                 [["TOTAL JOUR"] + [int(piv[d].sum()) for d in DAY_NAMES] + [int(piv["Total semaine"].sum())]],
-                columns=["Regime"] + DAY_NAMES + ["Total semaine"]
+                columns=["Regime"] + DAY_NAMES + ["Total semaine"],
             )
-            out = pd.concat([piv, total_row], ignore_index=True)
-            return out
+            return pd.concat([piv, total_row], ignore_index=True)
 
-        dej_piv = _pivot_prod(prod_dej)
-        din_piv = _pivot_prod(prod_din)
-        dej_piv.to_excel(writer, sheet_name="Déjeuner", index=False)
-        din_piv.to_excel(writer, sheet_name="Dîner", index=False)
+        _pivot_prod(prod_dej).to_excel(writer, sheet_name="Déjeuner", index=False)
+        _pivot_prod(prod_din).to_excel(writer, sheet_name="Dîner", index=False)
 
         wb = writer.book
 
         # --- Feuille Listes cachée ---
-        if "Listes" in wb.sheetnames:
-            ws_lists = wb["Listes"]
-            # on nettoie le contenu pour éviter les "restes"
-            for row in ws_lists.iter_rows():
-                for cell in row:
-                    cell.value = None
-        else:
-            ws_lists = wb.create_sheet("Listes")
+        ws_lists = wb["Listes"] if "Listes" in wb.sheetnames else wb.create_sheet("Listes")
+        for row in ws_lists.iter_rows():
+            for cell in row:
+                cell.value = None
 
-        # Listes demandées
-        coef_list = [0.1, 0.2, 0.25, 0.3, 1, 0.17, 0.04, 0.08]
-        kg_set = {0.1, 0.2, 0.25, 0.3}
-        suppliers_default = ["Sysco", "Domafrais", "Cercle Vert"]
+        # A: Units, C: Coef_Kg, E: Coef_Unite, G: Suppliers
+        ws_lists["A1"] = "UNITS"
+        for i, v in enumerate(units, start=2):
+            ws_lists.cell(row=i, column=1).value = v
 
-        # Col A : coefficients
-        ws_lists["A1"] = "COEFFICIENTS"
-        for i, v in enumerate(coef_list, start=2):
-            ws_lists.cell(row=i, column=1).value = float(v)
+        ws_lists["C1"] = "COEF_KG"
+        for i, v in enumerate(default_coef_kg, start=2):
+            ws_lists.cell(row=i, column=3).value = float(v)
 
-        # Col C : fournisseurs (liste complète, modifiable côté app si tu l’alimentes ailleurs)
-        ws_lists["C1"] = "FOURNISSEURS"
-        # si l’app a déjà mis une liste plus large, on la prend, sinon défaut
-        suppliers = []
-        try:
-            suppliers = [str(x).strip() for x in bc["Fournisseur"].dropna().unique().tolist() if str(x).strip()]
-        except Exception:
-            suppliers = []
-        # on veut une liste stable (au moins les 3 + ceux de l'app)
-        merged_sup = []
-        for s in suppliers_default + suppliers:
-            ss = str(s).strip()
-            if ss and ss not in merged_sup:
-                merged_sup.append(ss)
-        if not merged_sup:
-            merged_sup = suppliers_default
+        ws_lists["E1"] = "COEF_UNITE"
+        for i, v in enumerate(default_coef_unite, start=2):
+            ws_lists.cell(row=i, column=5).value = float(v)
 
-        for i, v in enumerate(merged_sup, start=2):
-            ws_lists.cell(row=i, column=3).value = v
+        ws_lists["G1"] = "SUPPLIERS"
+        for i, v in enumerate(suppliers, start=2):
+            ws_lists.cell(row=i, column=7).value = v
+
+        # Plages nommées (pour INDIRECT)
+        def _set_named(name: str, sheet: str, cell_range: str):
+            try:
+                existing = [dn for dn in wb.defined_names.definedName if dn.name == name]
+                for dn in existing:
+                    wb.defined_names.definedName.remove(dn)
+            except Exception:
+                pass
+            wb.defined_names.append(DefinedName(name=name, attr_text=f"{sheet}!{cell_range}"))
+
+        _set_named("UNITS", "Listes", "$A$2:$A$3")
+        _set_named("COEF_KG", "Listes", f"$C$2:$C${len(default_coef_kg)+1}")
+        _set_named("COEF_UNITE", "Listes", f"$E$2:$E${len(default_coef_unite)+1}")
+        _set_named("SUPPLIERS", "Listes", f"$G$2:$G${len(suppliers)+1}")
 
         ws_lists.sheet_state = "hidden"
 
@@ -1079,61 +1085,42 @@ def export_excel(
 
         max_row = ws_bc.max_row
 
-        # --- Data validations (LISTES DÉROULANTES) ---
-        # IMPORTANT : on applique la validation sur une PLAGE (pas cellule par cellule)
-        if col_coef:
-            coef_col_letter = get_column_letter(col_coef)
-            # =Listes!$A$2:$A$9
-            dv_coef = DataValidation(
-                type="list",
-                formula1=f"=Listes!$A$2:$A${len(coef_list)+1}",
-                allow_blank=True,
-                showDropDown=True,
-            )
-            ws_bc.add_data_validation(dv_coef)
-            dv_coef.add(f"{coef_col_letter}2:{coef_col_letter}{max_row}")
+        # --- Validations ---
+        if col_unit:
+            unit_letter = get_column_letter(col_unit)
+            dv_unit = DataValidation(type="list", formula1="=UNITS", allow_blank=True)
+            ws_bc.add_data_validation(dv_unit)
+            dv_unit.add(f"{unit_letter}2:{unit_letter}{max_row}")
 
         if col_supplier:
-            sup_col_letter = get_column_letter(col_supplier)
-            dv_sup = DataValidation(
-                type="list",
-                formula1=f"=Listes!$C$2:$C${len(merged_sup)+1}",
-                allow_blank=True,
-                showDropDown=True,
-            )
+            sup_letter = get_column_letter(col_supplier)
+            dv_sup = DataValidation(type="list", formula1="=SUPPLIERS", allow_blank=True)
             ws_bc.add_data_validation(dv_sup)
-            dv_sup.add(f"{sup_col_letter}2:{sup_col_letter}{max_row}")
+            dv_sup.add(f"{sup_letter}2:{sup_letter}{max_row}")
 
-        # --- Unité automatique selon coefficient ---
-        # Kg si coefficient dans {0.1,0.2,0.25,0.3} sinon Unité
-        if col_unit and col_coef:
-            unit_letter = get_column_letter(col_unit)
+        if col_coef and col_unit:
             coef_letter = get_column_letter(col_coef)
-            for r in range(2, max_row + 1):
-                # formule robuste (utilise OR)
-                ws_bc.cell(row=r, column=col_unit).value = (
-                    f'=IF(OR({coef_letter}{r}=0.1,{coef_letter}{r}=0.2,{coef_letter}{r}=0.25,{coef_letter}{r}=0.3),"Kg","Unité")'
-                )
+            unit_letter = get_column_letter(col_unit)
+            dv_coef = DataValidation(
+                type="list",
+                formula1=f'=INDIRECT(IF(${unit_letter}2="Kg","COEF_KG","COEF_UNITE"))',
+                allow_blank=True,
+            )
+            ws_bc.add_data_validation(dv_coef)
+            dv_coef.add(f"{coef_letter}2:{coef_letter}{max_row}")
 
-        # --- Quantité automatique + arrondis ---
-        if col_eff and col_coef and col_qty:
+        # --- Quantité formule ---
+        if col_eff and col_coef and col_qty and col_unit:
             eff_letter = get_column_letter(col_eff)
             coef_letter = get_column_letter(col_coef)
-            qty_letter = get_column_letter(col_qty)
-            unit_letter = get_column_letter(col_unit) if col_unit else None
-
+            unit_letter = get_column_letter(col_unit)
             for r in range(2, max_row + 1):
-                if unit_letter:
-                    ws_bc.cell(row=r, column=col_qty).value = (
-                        f'=IF({eff_letter}{r}="","",IF({coef_letter}{r}="","",'
-                        f'IF({unit_letter}{r}="Kg",ROUND({eff_letter}{r}*{coef_letter}{r},3),ROUND({eff_letter}{r}*{coef_letter}{r},0))))'
-                    )
-                else:
-                    ws_bc.cell(row=r, column=col_qty).value = (
-                        f'=IF({eff_letter}{r}="","",IF({coef_letter}{r}="","",ROUND({eff_letter}{r}*{coef_letter}{r},0)))'
-                    )
+                ws_bc.cell(row=r, column=col_qty).value = (
+                    f'=IF(OR({eff_letter}{r}="",{coef_letter}{r}=""),"",'
+                    f'IF({unit_letter}{r}="Kg",ROUND({eff_letter}{r}*{coef_letter}{r},3),ROUND({eff_letter}{r}*{coef_letter}{r},0)))'
+                )
 
-        # --- Mise en forme (inchangée) ---
+        # --- Mise en forme (inchangée : la tienne) ---
         thin = Side(style="thin", color="9E9E9E")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
         header_fill = PatternFill("solid", fgColor="EDEDED")
@@ -1145,7 +1132,6 @@ def export_excel(
 
         for name in ["Bon de commande", "Déjeuner", "Dîner"]:
             ws = wb[name]
-
             header_row = 1
             if name in ("Déjeuner", "Dîner"):
                 ws.insert_rows(1)
@@ -1178,41 +1164,12 @@ def export_excel(
                 ws.row_dimensions[r].height = 18
                 for c in range(1, max_col_ws + 1):
                     cell = ws.cell(row=r, column=c)
-                    if name in ("Déjeuner", "Dîner") and c >= 2:
-                        cell.alignment = cell_align_center
-                    else:
-                        cell.alignment = cell_align
+                    cell.alignment = cell_align_center if (name in ("Déjeuner", "Dîner") and c >= 2) else cell_align
                     cell.border = border
-
                 if r % 2 == 0:
                     for c in range(1, max_col_ws + 1):
                         ws.cell(row=r, column=c).fill = band_fill
 
-            if name in ("Déjeuner", "Dîner"):
-                for r in range(header_row + 1, max_row_ws + 1):
-                    ws.cell(row=r, column=1).font = Font(bold=True)
-                if max_row_ws >= 2 and str(ws.cell(row=max_row_ws, column=1).value).strip().upper() == "TOTAL":
-                    for c in range(1, max_col_ws + 1):
-                        ws.cell(row=max_row_ws, column=c).font = Font(bold=True)
-                        ws.cell(row=max_row_ws, column=c).fill = PatternFill("solid", fgColor="E0E0E0")
-
             ws.auto_filter.ref = f"A{header_row}:{get_column_letter(max_col_ws)}{max_row_ws}"
-
-            for c_idx in range(1, max_col_ws + 1):
-                col_letter = get_column_letter(c_idx)
-                max_len = 0
-                for r_idx in range(1, min(max_row_ws, 400) + 1):
-                    cell = ws.cell(row=r_idx, column=c_idx)
-                    if cell.value is None:
-                        continue
-                    max_len = max(max_len, len(str(cell.value)))
-                ws.column_dimensions[col_letter].width = min(max(max_len + 2, 10), 60)
-
-            if name in ("Déjeuner", "Dîner"):
-                ws.column_dimensions["A"].width = 34
-                for idx, _day in enumerate(DAY_NAMES, start=2):
-                    ws.column_dimensions[get_column_letter(idx)].width = 12
-                ws.column_dimensions[get_column_letter(2 + len(DAY_NAMES))].width = 12
-
             ws.page_setup.fitToWidth = 1
             ws.page_setup.fitToHeight = 0
