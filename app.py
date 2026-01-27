@@ -1,13 +1,6 @@
-import sys
-from pathlib import Path
-
-# --- Streamlit path bootstrap (robust imports & file paths) ---
-BASE_DIR = Path(__file__).parent
-sys.path.append(str(BASE_DIR))
-# --------------------------------------------------------------
-
 import streamlit as st
 import traceback
+from pathlib import Path
 import pandas as pd
 import datetime as dt
 
@@ -29,10 +22,7 @@ from src.billing import (
     export_monthly_workbook,
 )
 
-from src.config_store import load_suppliers, save_suppliers
-from src.order_forms import export_orders_per_supplier_pdf
-
-# --- Allergènes ---
+# --- Nouveau : Allergènes (ajout sans modifier les fonctions existantes) ---
 from src.allergens.learner import learn_from_filled_allergen_workbook
 from src.allergens.generator import generate_allergen_workbook
 
@@ -62,7 +52,7 @@ def format_pivot_for_display(piv: pd.DataFrame) -> pd.DataFrame:
 def set_background():
     import base64
 
-    img = BASE_DIR / "assets" / "background.jpg"
+    img = Path(__file__).parent / "assets" / "background.jpg"
     if not img.exists():
         return
     b64 = base64.b64encode(img.read_bytes()).decode("utf-8")
@@ -128,7 +118,7 @@ try:
     menu_path = _save_uploaded_file(menu_file, suffix=".xlsx")
 
     # Parse planning (openpyxl accepte aussi un file-like ; on garde ton comportement)
-    planning = parse_planning_fabrication(planning_path)
+    planning = parse_planning_fabrication(planning_file)
 
     # Optionnel : feuille mixé/lissé (si présente)
     mix_planning = {"dejeuner": pd.DataFrame(), "diner": pd.DataFrame()}
@@ -210,160 +200,19 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
 
     with tab_bc:
         st.subheader("Bon de commande")
-
-        # ✅ Coefficients disponibles (utilisés dans l'app + cohérents avec l'Excel exporté)
-        COEFS_KG = [0.1, 0.2, 0.25, 0.3]
-        COEFS_UNITE = [1, 0.17, 0.04, 0.08]
-        COEFS_ALL = COEFS_KG + COEFS_UNITE
-
         bon = build_bon_commande(planning, menu_items)
+        st.dataframe(bon, use_container_width=True, hide_index=True)
 
-        # --- Fournisseurs : liste éditable ---
-        with st.expander("⚙️ Gérer la liste des fournisseurs"):
-            suppliers = load_suppliers()
-            txt = st.text_area(
-                "1 fournisseur par ligne",
-                value="\n".join(suppliers),
-                height=120,
-                help="Tu peux ajouter/supprimer/renommer. La liste sert aux menus déroulants (Excel et app).",
-            )
-            if st.button("Enregistrer la liste", key="save_suppliers"):
-                new_list = [l.strip() for l in txt.splitlines() if l.strip()]
-                save_suppliers(new_list)
-                st.success("Liste fournisseurs enregistrée.")
-            suppliers = [l.strip() for l in txt.splitlines() if l.strip()] or suppliers
-
-        # Ajout des colonnes nécessaires (sans toucher aux fonctions cœur)
-        # ✅ Par défaut : Coef=1 donc Unité (le plus fréquent)
-        if "Unité" not in bon.columns:
-            bon.insert(len(bon.columns), "Unité", "Unité")
-        if "Fournisseur" not in bon.columns:
-            bon.insert(len(bon.columns), "Fournisseur", suppliers[0] if suppliers else "")
-        if "Coefficient" in bon.columns:
-            bon["Coefficient"] = pd.to_numeric(bon["Coefficient"], errors="coerce").fillna(1.0)
-        else:
-            bon.insert(len(bon.columns), "Coefficient", 1.0)
-
-        # --- Fusion de lignes (dans l'app) ---
-        st.markdown("**Option : fusionner des lignes** (addition des quantités, renommage du produit)")
-        bon_edit = bon.copy()
-        if "À_fusionner" not in bon_edit.columns:
-            bon_edit.insert(0, "À_fusionner", False)
-
-        edited = st.data_editor(
-            bon_edit,
-            use_container_width=True,
-            hide_index=True,
-            num_rows="fixed",
-            column_config={
-                "À_fusionner": st.column_config.CheckboxColumn(
-                    "Fusionner", help="Coche les lignes à fusionner."
-                ),
-                "Unité": st.column_config.SelectboxColumn(
-                    "Unité",
-                    options=["Kg", "Unité"],
-                    help="Détermine la liste de coefficients et l'arrondi de la quantité.",
-                ),
-                "Fournisseur": st.column_config.SelectboxColumn(
-                    "Fournisseur",
-                    options=suppliers,
-                    help="Choisis le fournisseur (menu déroulant).",
-                ),
-                # ✅ IMPORTANT : coefficient en menu déroulant => plus de saisie manuelle
-                "Coefficient": st.column_config.SelectboxColumn(
-                    "Coefficient",
-                    options=COEFS_ALL,
-                    help="Choisis le coefficient (liste). L'unité se met à jour automatiquement.",
-                ),
-            },
-        )
-
-        # ✅ Unité auto en fonction du coefficient choisi (dans l'app)
-        df_tmp = pd.DataFrame(edited)
-        if "Coefficient" in df_tmp.columns and "Unité" in df_tmp.columns:
-            df_tmp["Coefficient"] = pd.to_numeric(df_tmp["Coefficient"], errors="coerce")
-            df_tmp.loc[df_tmp["Coefficient"].isin(COEFS_KG), "Unité"] = "Kg"
-            df_tmp.loc[df_tmp["Coefficient"].isin(COEFS_UNITE), "Unité"] = "Unité"
-        edited = df_tmp
-
-        c_merge1, c_merge2, c_merge3 = st.columns([2, 2, 3])
-        with c_merge1:
-            new_name = st.text_input("Nouveau nom produit (si fusion)", value="")
-        with c_merge2:
-            do_merge = st.button("Fusionner les lignes cochées", key="merge_rows")
-        with c_merge3:
-            st.caption("Règle : fusion uniquement si Repas/Typologie/Fournisseur/Unité/Coefficient identiques.")
-
-        if do_merge:
-            df = pd.DataFrame(edited)
-            sel = df[df["À_fusionner"] == True]
-            if sel.empty or len(sel) < 2:
-                st.warning("Coche au moins 2 lignes à fusionner.")
-            else:
-                key_cols = [c for c in ["Repas", "Typologie", "Fournisseur", "Unité", "Coefficient"] if c in df.columns]
-                n_groups = sel.groupby(key_cols).ngroups if key_cols else 0
-                if n_groups != 1:
-                    st.error("Les lignes cochées n'ont pas les mêmes Repas/Typologie/Fournisseur/Unité/Coefficient.")
-                else:
-                    keep = sel.iloc[0].copy()
-                    keep["Produit"] = (new_name.strip() or str(keep.get("Produit", ""))).strip() or str(keep.get("Produit", ""))
-
-                    for col in ["Effectif", "Quantité"]:
-                        if col in df.columns:
-                            keep[col] = float(sel[col].fillna(0).sum())
-
-                    if "Jour(s)" in df.columns:
-                        days = []
-                        for v in sel["Jour(s)"].fillna("").astype(str).tolist():
-                            for p in [x.strip() for x in v.split(",") if x.strip()]:
-                                if p not in days:
-                                    days.append(p)
-                        keep["Jour(s)"] = ", ".join(days)
-
-                    df_rest = df[df["À_fusionner"] != True].copy()
-                    df_out = pd.concat([df_rest, pd.DataFrame([keep])], ignore_index=True)
-                    df_out["À_fusionner"] = False
-                    st.success("Fusion effectuée.")
-                    edited = df_out
-
-        # Excel : on n'exporte pas la colonne UI "À_fusionner"
-        export_df = pd.DataFrame(edited).drop(columns=["À_fusionner"], errors="ignore")
-
-        cA, cB = st.columns([1, 1])
-        with cA:
-            if st.button("Générer Bon de commande (Excel)", type="primary"):
-                out_path = _temp_out_path(".xlsx")
-                export_excel(export_df, prod_dej_long, prod_din_long, out_path)
-                with open(out_path, "rb") as f:
-                    st.download_button(
-                        "Télécharger Bon de commande.xlsx",
-                        data=f,
-                        file_name="Bon de commande.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
-
-        with cB:
-            st.markdown("**Après édition de l'Excel : imprimer un bon par fournisseur**")
-            filled = st.file_uploader(
-                "Ré-uploade ton Excel travaillé (Bon de commande.xlsx)",
-                type=["xlsx"],
-                key="filled_bc",
-            )
-            if filled is not None and st.button("Générer PDFs par fournisseur", key="pdf_by_supplier"):
-                try:
-                    tmp_in = _save_uploaded_file(filled, suffix=".xlsx")
-                    df_in = pd.read_excel(tmp_in, sheet_name="Bon de commande")
-                    out_pdf = _temp_out_path(".pdf")
-                    export_orders_per_supplier_pdf(df_in, out_pdf)
-                    with open(out_pdf, "rb") as f:
-                        st.download_button(
-                            "Télécharger Bons par fournisseur.pdf",
-                            data=f,
-                            file_name="Bons par fournisseur.pdf",
-                            mime="application/pdf",
-                        )
-                except Exception as e:
-                    st.error(f"Impossible de générer les PDFs : {e}")
+        if st.button("Générer Bon de commande (Excel)", type="primary"):
+            out_path = _temp_out_path(".xlsx")
+            export_excel(bon, prod_dej_long, prod_din_long, out_path)
+            with open(out_path, "rb") as f:
+                st.download_button(
+                    "Télécharger Bon de commande.xlsx",
+                    data=f,
+                    file_name="Bon de commande.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
 
     with tab_bl:
         st.subheader("Bons de livraison (PDF)")
@@ -472,15 +321,13 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                 for i, up in enumerate(batch_files):
                     w_mon = batch_monday + dt.timedelta(days=7 * i)
 
-                    # Sauvegarde le fichier uploadé (nécessaire pour relire 2 fois le classeur)
-                    tmp_path_i = _save_uploaded_file(up, suffix=".xlsx")
-
-                    # Parse fabrication
-                    plan_i = parse_planning_fabrication(tmp_path_i)
+                    # Parse fabrication (openpyxl accepte aussi le file-like)
+                    plan_i = parse_planning_fabrication(up)
 
                     # Mixé/Lissé : nécessite un path (on passe par un temp)
                     mix_i = {"dejeuner": pd.DataFrame(), "diner": pd.DataFrame()}
                     try:
+                        tmp_path_i = _save_uploaded_file(up, suffix=".xlsx")
                         mix_i = parse_planning_mixe_lisse(tmp_path_i)
                     except Exception:
                         pass
@@ -510,12 +357,17 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
             records["date"] = pd.to_datetime(records["date"]).dt.date
             months = sorted({(d.year, d.month) for d in records["date"]})
             month_labels = [f"{y}-{m:02d}" for (y, m) in months]
-            _ = st.multiselect(
+            # Export produces a full-year workbook (Jan → Dec) for the most recent year.
+            # We keep the selector for information, but default to all months so users don't
+            # accidentally export only the last one.
+            choice = st.multiselect(
                 "Mois présents (info)", options=month_labels, default=month_labels
             )
 
             if st.button("Générer le classeur Excel de facturation"):
+                # Always export the full year so the workbook can be used from Jan to Dec.
                 records_f = records
+
                 out_xlsx = _temp_out_path(".xlsx")
                 export_monthly_workbook(records_f, out_xlsx)
 
@@ -537,8 +389,11 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
             "L'apprentissage sert uniquement à **préremplir les croix (X)** à partir des classeurs de semaines précédentes que tu remplis."
         )
 
-        template_dir = BASE_DIR / "templates" / "allergen"
+        base_dir = Path(__file__).parent
+        template_dir = base_dir / "templates" / "allergen"
 
+        # CLOUD-SAFE : on évite de dépendre d'un fichier local persistant.
+        # On passe par upload / download du référentiel maître.
         c1, c2 = st.columns([2, 1])
         with c1:
             st.markdown("### 0) Référentiel maître (obligatoire)")
