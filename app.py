@@ -249,10 +249,10 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                     options=suppliers,
                     help="Choisis le fournisseur (menu déroulant).",
                 ),
-                "Coefficient": st.column_config.SelectboxColumn(
+                "Coefficient": st.column_config.NumberColumn(
                     "Coefficient",
-                    options=[0.1, 0.2, 0.25, 0.3, 1, 0.17, 0.04, 0.08],
-                    help="Choisis le coefficient (liste). Dans l'Excel, l'Unité se mettra automatiquement selon le coefficient.",
+                    help="Dans l'Excel, tu auras une liste déroulante dépendante de l'unité.",
+                    format="%.3f",
                 ),
             },
         )
