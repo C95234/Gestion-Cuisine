@@ -1526,8 +1526,32 @@ def export_excel(
     - Bordures fines, retour à la ligne, gel de la 1ère ligne
     - Auto-filter + ajustement des largeurs de colonnes
     """
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from openpyxl.workbook.defined_name import DefinedName
+
+    # --- Sécurise les colonnes utiles au bon de commande ---
+    # On le fait ici (à l'export) pour ne pas "détricoter" les fonctions
+    # de génération amont : même si l'app n'a pas enrichi le DataFrame,
+    # l'Excel sortira avec Fournisseur / Coefficient / Unité.
+    bon_for_export = bon_commande.copy() if isinstance(bon_commande, pd.DataFrame) else bon_commande
+    if isinstance(bon_for_export, pd.DataFrame):
+        # Coefficient : par défaut à 1 (le cas le plus fréquent)
+        # pour que la quantité se calcule immédiatement, tout en laissant
+        # l'utilisateur choisir un autre coefficient via la liste déroulante.
+        if "Coefficient" not in bon_for_export.columns:
+            bon_for_export["Coefficient"] = 1
+        else:
+            # si la colonne existe mais contient des vides, on met 1
+            bon_for_export["Coefficient"] = (
+                bon_for_export["Coefficient"].replace("", pd.NA).fillna(1)
+            )
+        if "Unité" not in bon_for_export.columns and "Unite" not in bon_for_export.columns:
+            bon_for_export["Unité"] = ""
+        if "Fournisseur" not in bon_for_export.columns:
+            bon_for_export["Fournisseur"] = ""
+
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-        bon_commande.to_excel(writer, sheet_name="Bon de commande", index=False)
+        bon_for_export.to_excel(writer, sheet_name="Bon de commande", index=False)
 
         def _pivot_prod(long_df: pd.DataFrame) -> pd.DataFrame:
             if long_df is None or long_df.empty:
@@ -1562,7 +1586,54 @@ def export_excel(
         din_piv.to_excel(writer, sheet_name="Dîner", index=False)
 
         wb = writer.book
-	
+
+        # --- Listes (cachées) pour validations Excel ---
+        # Objectif :
+        # - Coefficient : menu déroulant (tous les coefficients)
+        # - Unité : se met automatiquement selon le coefficient (Kg vs Unité)
+        # - Fournisseur : menu déroulant (liste éditable côté app)
+        if "Listes" not in wb.sheetnames:
+            ws_lists = wb.create_sheet("Listes")
+        else:
+            ws_lists = wb["Listes"]
+            ws_lists.delete_rows(1, ws_lists.max_row)
+
+        # Valeurs demandées
+        coef_kg = [0.1, 0.2, 0.25, 0.3]
+        coef_unit = [1, 0.17, 0.04, 0.08]
+        coef_all = coef_kg + coef_unit
+
+        ws_lists["A1"].value = "Coefficients"
+        for i, v in enumerate(coef_all, start=2):
+            ws_lists.cell(row=i, column=1).value = v
+
+        ws_lists["C1"].value = "Coefficients_Kg"
+        for i, v in enumerate(coef_kg, start=2):
+            ws_lists.cell(row=i, column=3).value = v
+
+        ws_lists["E1"].value = "Fournisseurs"
+        suppliers = []
+        if isinstance(bon_for_export, pd.DataFrame) and ("Fournisseur" in bon_for_export.columns):
+            suppliers = [str(x).strip() for x in bon_for_export["Fournisseur"].dropna().unique().tolist() if str(x).strip()]
+        if not suppliers:
+            suppliers = ["Sysco", "Domafrais", "Cercle Vert"]
+        for i, v in enumerate(suppliers, start=2):
+            ws_lists.cell(row=i, column=5).value = v
+
+        # Plages nommées robustes (Excel les reconnaît mieux que create_named_range selon versions)
+        def _upsert_defined_name(name: str, refers_to: str):
+            # remove existing
+            to_remove = [dn for dn in wb.defined_names.definedName if getattr(dn, "name", None) == name]
+            for dn in to_remove:
+                wb.defined_names.definedName.remove(dn)
+            wb.defined_names.append(DefinedName(name=name, attr_text=refers_to))
+
+        _upsert_defined_name("COEF_ALL", "'Listes'!$A$2:$A$%d" % (len(coef_all) + 1))
+        _upsert_defined_name("COEF_KG", "'Listes'!$C$2:$C$%d" % (len(coef_kg) + 1))
+        _upsert_defined_name("SUPPLIERS", "'Listes'!$E$2:$E$%d" % (len(suppliers) + 1))
+
+        ws_lists.sheet_state = "hidden"
+
         ws_bc = wb["Bon de commande"]
 
         # repérage des colonnes par leur nom (robuste à l'ordre)
@@ -1575,16 +1646,53 @@ def export_excel(
         col_eff = headers.get("effectif")
         col_coef = headers.get("coefficient")
         col_qty = headers.get("quantité") or headers.get("quantite")
+        col_unit = headers.get("unité") or headers.get("unite")
+        col_supplier = headers.get("fournisseur")
 
+        # --- Validations Excel (listes déroulantes) ---
+        # Fournisseurs
+        if col_supplier:
+            dv_sup = DataValidation(type="list", formula1="=SUPPLIERS", allow_blank=True)
+            ws_bc.add_data_validation(dv_sup)
+            for r in range(2, ws_bc.max_row + 1):
+                dv_sup.add(ws_bc.cell(row=r, column=col_supplier))
+
+        # Coefficients (une seule liste déroulante)
+        if col_coef:
+            dv_coef = DataValidation(type="list", formula1="=COEF_ALL", allow_blank=True)
+            ws_bc.add_data_validation(dv_coef)
+            for r in range(2, ws_bc.max_row + 1):
+                dv_coef.add(ws_bc.cell(row=r, column=col_coef))
+
+        # Unité auto selon coefficient :
+        # - si coefficient dans COEF_KG => "Kg"
+        # - sinon => "Unité"
+        if col_unit and col_coef:
+            coef_letter = openpyxl.utils.get_column_letter(col_coef)
+            for r in range(2, ws_bc.max_row + 1):
+                ws_bc.cell(row=r, column=col_unit).value = (
+                    f"=IF(ISBLANK({coef_letter}{r}),\"\",IF(ISNUMBER(MATCH({coef_letter}{r},COEF_KG,0)),\"Kg\",\"Unité\"))"
+                )
+
+        # --- Formule Quantité ---
         if col_eff and col_coef and col_qty:
             eff_letter = openpyxl.utils.get_column_letter(col_eff)
             coef_letter = openpyxl.utils.get_column_letter(col_coef)
 
+            unit_letter = openpyxl.utils.get_column_letter(col_unit) if col_unit else None
+
             for r in range(2, ws_bc.max_row + 1):
-                ws_bc.cell(
-                    row=r,
-                    column=col_qty
-                ).value = f"=ROUND({eff_letter}{r}*{coef_letter}{r},0)"
+                if unit_letter:
+                    # Kg => 3 décimales ; Unité => entier
+                    # On laisse vide si Effectif ou Coefficient est vide.
+                    ws_bc.cell(row=r, column=col_qty).value = (
+                        f"=IF(OR(ISBLANK({eff_letter}{r}),ISBLANK({coef_letter}{r})),\"\","
+                        f"IF({unit_letter}{r}=\"Kg\",ROUND({eff_letter}{r}*{coef_letter}{r},3),ROUND({eff_letter}{r}*{coef_letter}{r},0)))"
+                    )
+                else:
+                    ws_bc.cell(row=r, column=col_qty).value = (
+                        f"=IF(OR(ISBLANK({eff_letter}{r}),ISBLANK({coef_letter}{r})),\"\",ROUND({eff_letter}{r}*{coef_letter}{r},0))"
+                    )
 
 
         thin = Side(style="thin", color="9E9E9E")
