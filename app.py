@@ -1,6 +1,20 @@
+"""Streamlit entrypoint.
+
+Streamlit Cloud peut exécuter l'app avec un répertoire de travail différent du
+répertoire du projet. Pour rendre les imports `import src.*` fiables, on force
+le dossier contenant ce fichier dans `sys.path`.
+"""
+
+from pathlib import Path
+import sys
+
+# ✅ Assure que le dossier racine du projet est bien dans sys.path
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import streamlit as st
 import traceback
-from pathlib import Path
 import pandas as pd
 import datetime as dt
 import importlib
