@@ -3,6 +3,9 @@
 Streamlit Cloud peut exécuter l'app avec un répertoire de travail différent du
 répertoire du projet. Pour rendre les imports `import src.*` fiables, on force
 le dossier contenant ce fichier dans `sys.path`.
+
+⚠️ Important Streamlit: après un crash d'import, Streamlit peut garder un module
+partiellement importé en cache. On purge donc sys.modules pour `src.*`.
 """
 
 from pathlib import Path
@@ -18,62 +21,95 @@ import traceback
 import pandas as pd
 import datetime as dt
 import importlib
-import inspect
 
-# ✅ DEBUG GLOBAL : on capture toute erreur d'import des modules "src"
-try:
-    from src.processor import (
-        parse_planning_fabrication,
-        parse_planning_mixe_lisse,
-        make_production_summary,
-        make_production_pivot,
-        parse_menu,
-        build_bon_commande,
-        export_excel,
-        export_bons_livraison_pdf,
-    )
 
-    # --- DEBUG spécifique ConfigStore ---
-    cs = importlib.import_module("src.config_store")
+# -----------------------------
+# Helpers import robustes
+# -----------------------------
+def _purge_src_modules() -> None:
+    """Supprime du cache Python tous les modules commençant par 'src.' (et 'src')."""
+    to_del = [k for k in list(sys.modules.keys()) if k == "src" or k.startswith("src.")]
+    for k in to_del:
+        sys.modules.pop(k, None)
 
-    st.error("DEBUG src.config_store")
-    st.write("Fichier chargé :")
-    st.code(getattr(cs, "__file__", "<?>"))
 
-    st.write("Attributs du module :")
-    st.code("\n".join(dir(cs)))
+def _import_or_stop():
+    """Importe les modules src.* de façon robuste ; stop l'app si erreur."""
+    try:
+        _purge_src_modules()
 
-    st.write("Début du fichier :")
-    src = inspect.getsource(cs)
-    st.code("\n".join(src.splitlines()[:120]))
+        # Import processor
+        processor = importlib.import_module("src.processor")
+        importlib.reload(processor)
 
-    # tentative d'accès
-    ConfigStore = getattr(cs, "ConfigStore")
+        # Import config_store (puis reload)
+        cs = importlib.import_module("src.config_store")
+        importlib.reload(cs)
 
-    from src.order_forms import (
-        export_orders_per_supplier_excel,
-        export_orders_per_supplier_pdf,
-    )
+        # Vérification explicite (sinon erreur claire)
+        if not hasattr(cs, "ConfigStore"):
+            raise ImportError(
+                f"src.config_store importé depuis {getattr(cs, '__file__', '<?>')} "
+                f"mais ConfigStore est introuvable. Attributs: "
+                f"{', '.join([k for k in dir(cs) if not k.startswith('__')])}"
+            )
 
-    from src.billing import (
-        planning_to_daily_totals,
-        mixe_lisse_to_daily_totals,
-        save_week,
-        load_records,
-        export_monthly_workbook,
-    )
+        # Import order_forms
+        order_forms = importlib.import_module("src.order_forms")
+        importlib.reload(order_forms)
 
-    from src.allergens.learner import learn_from_filled_allergen_workbook
-    from src.allergens.generator import generate_allergen_workbook
+        # Import billing
+        billing = importlib.import_module("src.billing")
+        importlib.reload(billing)
 
-except Exception as e:
-    st.error("💥 Erreur import module src.*")
-    st.code(repr(e))
-    st.code(traceback.format_exc())
-    st.stop()
+        # Import allergènes
+        learner = importlib.import_module("src.allergens.learner")
+        importlib.reload(learner)
+
+        generator = importlib.import_module("src.allergens.generator")
+        importlib.reload(generator)
+
+        return processor, cs, order_forms, billing, learner, generator
+
+    except Exception as e:
+        st.error("💥 Erreur lors d’un import (module src.*)")
+        st.code(repr(e))
+        st.code(traceback.format_exc())
+        st.stop()
+
+
+processor, cs, order_forms, billing, learner, generator = _import_or_stop()
+
+# Exports processor
+parse_planning_fabrication = processor.parse_planning_fabrication
+parse_planning_mixe_lisse = processor.parse_planning_mixe_lisse
+make_production_summary = processor.make_production_summary
+make_production_pivot = processor.make_production_pivot
+parse_menu = processor.parse_menu
+build_bon_commande = processor.build_bon_commande
+export_excel = processor.export_excel
+export_bons_livraison_pdf = processor.export_bons_livraison_pdf
+
+# ConfigStore
+ConfigStore = cs.ConfigStore
+
+# order_forms
+export_orders_per_supplier_excel = order_forms.export_orders_per_supplier_excel
+export_orders_per_supplier_pdf = order_forms.export_orders_per_supplier_pdf
+
+# billing
+planning_to_daily_totals = billing.planning_to_daily_totals
+mixe_lisse_to_daily_totals = billing.mixe_lisse_to_daily_totals
+save_week = billing.save_week
+load_records = billing.load_records
+export_monthly_workbook = billing.export_monthly_workbook
+
+# allergènes
+learn_from_filled_allergen_workbook = learner.learn_from_filled_allergen_workbook
+generate_allergen_workbook = generator.generate_allergen_workbook
+
 
 DAY_NAMES = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
-
 
 
 def format_pivot_for_display(piv: pd.DataFrame) -> pd.DataFrame:
@@ -156,8 +192,8 @@ with st.sidebar:
 
     st.markdown("---")
     st.header("Paramètres — Bons de commande")
+
     store = ConfigStore()
-    # Charge la conf à chaque refresh (petits JSON)
     coeffs = store.load_coefficients()
     units = store.load_units()
     suppliers = store.load_suppliers()
@@ -170,7 +206,9 @@ with st.sidebar:
         ctab1, ctab2, ctab3 = st.tabs(["Coefficients", "Unités", "Fournisseurs"])
 
         with ctab1:
-            dfc = pd.DataFrame([{"name": c.name, "value": c.value, "default_unit": c.default_unit} for c in coeffs])
+            dfc = pd.DataFrame(
+                [{"name": c.name, "value": c.value, "default_unit": c.default_unit} for c in coeffs]
+            )
             if dfc.empty:
                 dfc = pd.DataFrame([{"name": "1", "value": 1.0, "default_unit": "unité"}])
             dfc_edit = st.data_editor(
@@ -238,7 +276,7 @@ try:
     planning_path = _save_uploaded_file(planning_file, suffix=".xlsx")
     menu_path = _save_uploaded_file(menu_file, suffix=".xlsx")
 
-    # Parse planning (openpyxl accepte aussi un file-like ; on garde ton comportement)
+    # Parse planning
     planning = parse_planning_fabrication(planning_file)
 
     # Optionnel : feuille mixé/lissé (si présente)
@@ -314,19 +352,17 @@ try:
 
 - On prend le tableau Déjeuner (resp. Dîner).
 - On récupère la ligne **TOTAL JOUR** (ou à défaut on additionne toutes les lignes régime).
-- On trace une barre par jour, avec 2 séries : **Déjeuner** et **Dîner**.
-
-Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux segments) pour Mardi."""
+- On trace une barre par jour, avec 2 séries : **Déjeuner** et **Dîner**."""
             )
 
     with tab_bc:
         st.subheader("Bon de commande")
         bon = build_bon_commande(planning, menu_items)
         st.caption(
-            "Tu peux **fusionner/renommer des lignes** en modifiant la colonne *Libellé* (elles seront regroupées au moment des bons par fournisseur)."
+            "Tu peux **fusionner/renommer des lignes** en modifiant la colonne *Libellé* "
+            "(elles seront regroupées au moment des bons par fournisseur)."
         )
 
-        # Aperçu dans l'app (édition légère)
         bon_edit = st.data_editor(
             bon,
             use_container_width=True,
@@ -335,7 +371,6 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
             key="bc_editor",
         )
 
-        # Charge les paramètres (au cas où la sidebar n'est pas ouverte)
         store2 = ConfigStore()
         coeffs2 = [
             {"name": c.name, "value": float(c.value), "default_unit": c.default_unit}
@@ -379,7 +414,9 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                 "1) Télécharge le bon Excel, complète les colonnes Coefficient/Unité/Fournisseur/Libellé. "
                 "2) Ré-uploade le fichier ici pour générer 1 bon par fournisseur."
             )
-            bc_filled = st.file_uploader("Bon de commande rempli (.xlsx)", type=["xlsx"], key="bc_filled")
+            bc_filled = st.file_uploader(
+                "Bon de commande rempli (.xlsx)", type=["xlsx"], key="bc_filled"
+            )
             if bc_filled is not None:
                 try:
                     df_filled = pd.read_excel(bc_filled, sheet_name="Bon de commande")
@@ -449,9 +486,7 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
         default_monday = today - dt.timedelta(days=today.weekday())
         week_monday = st.date_input("Lundi de la semaine du planning", value=default_monday)
 
-        repas_daily = planning_to_daily_totals(
-            planning["dejeuner"], planning["diner"], week_monday
-        )
+        repas_daily = planning_to_daily_totals(planning["dejeuner"], planning["diner"], week_monday)
         ml_daily = mixe_lisse_to_daily_totals(
             mix_planning.get("dejeuner"), mix_planning.get("diner"), week_monday
         )
@@ -494,7 +529,8 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
 
         st.markdown("### Mémoriser plusieurs semaines d'un coup")
         st.caption(
-            "Optionnel : upload plusieurs plannings (1 fichier = 1 semaine), choisis le lundi de départ, et l'app mémorise tout d'un coup."
+            "Optionnel : upload plusieurs plannings (1 fichier = 1 semaine), choisis le lundi de départ, "
+            "et l'app mémorise tout d'un coup."
         )
 
         batch_files = st.file_uploader(
@@ -517,11 +553,8 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                 total_ml = 0
                 for i, up in enumerate(batch_files):
                     w_mon = batch_monday + dt.timedelta(days=7 * i)
-
-                    # Parse fabrication (openpyxl accepte aussi le file-like)
                     plan_i = parse_planning_fabrication(up)
 
-                    # Mixé/Lissé : nécessite un path (on passe par un temp)
                     mix_i = {"dejeuner": pd.DataFrame(), "diner": pd.DataFrame()}
                     try:
                         tmp_path_i = _save_uploaded_file(up, suffix=".xlsx")
@@ -542,7 +575,8 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                     total_ml += n_m
 
                 st.success(
-                    f"Semaines mémorisées : {len(batch_files)} fichier(s) → {total_repas} lignes repas, {total_ml} lignes mixé/lissé."
+                    f"Semaines mémorisées : {len(batch_files)} fichier(s) → "
+                    f"{total_repas} lignes repas, {total_ml} lignes mixé/lissé."
                 )
 
         st.markdown("### Export facturation")
@@ -554,19 +588,11 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
             records["date"] = pd.to_datetime(records["date"]).dt.date
             months = sorted({(d.year, d.month) for d in records["date"]})
             month_labels = [f"{y}-{m:02d}" for (y, m) in months]
-            # Export produces a full-year workbook (Jan → Dec) for the most recent year.
-            # We keep the selector for information, but default to all months so users don't
-            # accidentally export only the last one.
-            choice = st.multiselect(
-                "Mois présents (info)", options=month_labels, default=month_labels
-            )
+            _ = st.multiselect("Mois présents (info)", options=month_labels, default=month_labels)
 
             if st.button("Générer le classeur Excel de facturation"):
-                # Always export the full year so the workbook can be used from Jan to Dec.
-                records_f = records
-
                 out_xlsx = _temp_out_path(".xlsx")
-                export_monthly_workbook(records_f, out_xlsx)
+                export_monthly_workbook(records, out_xlsx)
 
                 with open(out_xlsx, "rb") as f:
                     st.download_button(
@@ -576,21 +602,16 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
 
-    # ==============================
-    # Allergènes
-    # ==============================
     with tab_all:
         st.subheader("Tableaux allergènes (format EXACT)")
         st.caption(
             "Le logiciel génère **toujours** le tableau (plats + colonnes + bloc 'Origine des viandes') à partir du menu. "
-            "L'apprentissage sert uniquement à **préremplir les croix (X)** à partir des classeurs de semaines précédentes que tu remplis."
+            "L'apprentissage sert uniquement à **préremplir les croix (X)** à partir des classeurs de semaines précédentes."
         )
 
         base_dir = Path(__file__).parent
         template_dir = base_dir / "templates" / "allergen"
 
-        # CLOUD-SAFE : on évite de dépendre d'un fichier local persistant.
-        # On passe par upload / download du référentiel maître.
         c1, c2 = st.columns([2, 1])
         with c1:
             st.markdown("### 0) Référentiel maître (obligatoire)")
@@ -609,10 +630,6 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                 type=["xlsx"],
                 key="all_filled_upload",
             )
-            st.markdown(
-                "- Chaque semaine : tu exportes le classeur allergènes, tu complètes les X, puis tu l'upload ici.\n"
-                "- Le logiciel met à jour le référentiel maître en faisant un **OR** (si un X existe, il reste).\n"
-            )
 
             if st.button("📚 Apprendre depuis ce classeur", type="primary"):
                 if not master_upload:
@@ -624,9 +641,7 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
                     tmp_filled = _save_uploaded_file(filled_allergen_wb, suffix=".xlsx")
                     tmp_master_out = _temp_out_path(".xlsx")
 
-                    learn_from_filled_allergen_workbook(
-                        tmp_filled, tmp_master_in, tmp_master_out
-                    )
+                    learn_from_filled_allergen_workbook(tmp_filled, tmp_master_in, tmp_master_out)
 
                     st.success("Référentiel maître mis à jour.")
                     with open(tmp_master_out, "rb") as f:
