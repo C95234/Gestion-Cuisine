@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Union
 
 
 @dataclass
@@ -26,20 +26,19 @@ class Supplier:
 class ConfigStore:
     """Stockage persistant (JSON) des listes utilisées pour les bons de commande."""
 
-    def __init__(self, base_dir: Path | str | None = None) -> None:
-        candidates = []
+    def __init__(self, base_dir: Optional[Union[Path, str]] = None) -> None:
+        candidates: List[Path] = []
 
-        # 1️⃣ Si on fournit un dossier explicitement
         if base_dir is not None:
             candidates.append(Path(base_dir))
 
-        # 2️⃣ Dossier projet (local)
+        # Dossier projet (local)
         candidates.append(Path(__file__).resolve().parent.parent / "data" / "config")
 
-        # 3️⃣ HOME (souvent writable sur Streamlit Cloud)
+        # HOME (souvent writable sur Streamlit Cloud)
         candidates.append(Path.home() / ".gestion-cuisine" / "config")
 
-        # 4️⃣ /tmp (toujours writable mais non persistant)
+        # Secours (toujours writable mais non persistant)
         candidates.append(Path("/tmp") / "gestion-cuisine" / "config")
 
         self.base_dir = self._pick_writable_dir(candidates)
@@ -50,29 +49,35 @@ class ConfigStore:
 
         self._ensure_defaults()
 
-    # 🔧 Choisit automatiquement un dossier où l'écriture est possible
-    def _pick_writable_dir(self, candidates: list[Path]) -> Path:
-        last_err: Exception | None = None
+    def _pick_writable_dir(self, candidates: List[Path]) -> Path:
+        last_err: Optional[Exception] = None
         for p in candidates:
             try:
                 p.mkdir(parents=True, exist_ok=True)
                 test = p / ".write_test"
                 test.write_text("ok", encoding="utf-8")
-                test.unlink(missing_ok=True)
+                try:
+                    test.unlink()
+                except Exception:
+                    pass
                 return p
             except Exception as e:
                 last_err = e
                 continue
-        raise RuntimeError(f"Impossible de trouver un dossier d'écriture pour la config: {last_err}")
+        raise RuntimeError(
+            "Impossible de trouver un dossier d'écriture pour la config: %r" % (last_err,)
+        )
 
     def _ensure_defaults(self) -> None:
         if not self._units_path.exists():
             self.save_units(["kg", "g", "L", "mL", "unité", "pièce", "barquette"])
         if not self._coeff_path.exists():
-            self.save_coefficients([
-                Coefficient(name="1", value=1.0, default_unit="unité"),
-                Coefficient(name="1 kg", value=1.0, default_unit="kg"),
-            ])
+            self.save_coefficients(
+                [
+                    Coefficient(name="1", value=1.0, default_unit="unité"),
+                    Coefficient(name="1 kg", value=1.0, default_unit="kg"),
+                ]
+            )
         if not self._suppliers_path.exists():
             self.save_suppliers([])
 
@@ -102,11 +107,13 @@ class ConfigStore:
             out.append(Coefficient(name=name, value=value, default_unit=default_unit))
         return out
 
-    def save_coefficients(self, coeffs: List[Coefficient] | List[Dict[str, Any]]) -> None:
+    def save_coefficients(self, coeffs: Union[List[Coefficient], List[Dict[str, Any]]]) -> None:
         payload: List[Dict[str, Any]] = []
         for c in coeffs:
             if isinstance(c, Coefficient):
-                payload.append({"name": c.name, "value": float(c.value), "default_unit": c.default_unit})
+                payload.append(
+                    {"name": c.name, "value": float(c.value), "default_unit": c.default_unit}
+                )
             elif isinstance(c, dict):
                 name = str(c.get("name", "")).strip()
                 if not name:
@@ -139,7 +146,7 @@ class ConfigStore:
             )
         return out
 
-    def save_suppliers(self, suppliers: List[Supplier] | List[Dict[str, Any]]) -> None:
+    def save_suppliers(self, suppliers: Union[List[Supplier], List[Dict[str, Any]]]) -> None:
         payload: List[Dict[str, Any]] = []
         for s in suppliers:
             if isinstance(s, Supplier):
