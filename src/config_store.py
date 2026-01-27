@@ -179,3 +179,7 @@ class ConfigStore:
             path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
+
+
+# Expose explicit public API for `from src.config_store import ConfigStore`
+__all__ = ["ConfigStore", "Coefficient", "Supplier"]
