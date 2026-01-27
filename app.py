@@ -15,19 +15,8 @@ from src.processor import (
     export_bons_livraison_pdf,
 )
 
-from src.config_store import (
-    load_coefficients,
-    save_coefficients,
-    load_units,
-    save_units,
-    load_suppliers,
-    save_suppliers,
-)
-
-from src.order_forms import (
-    export_orders_per_supplier_pdf,
-    export_orders_per_supplier_excel,
-)
+from src.config_store import ConfigStore
+from src.order_forms import export_orders_per_supplier_excel, export_orders_per_supplier_pdf
 from src.billing import (
     planning_to_daily_totals,
     mixe_lisse_to_daily_totals,
@@ -118,56 +107,84 @@ with st.sidebar:
     planning_file = st.file_uploader("Planning fabrication (.xlsx)", type=["xlsx"])
     menu_file = st.file_uploader("Menu (.xlsx)", type=["xlsx"])
     st.markdown("---")
-    st.header("Paramètres — Bons de commande")
-    st.caption("Ces listes sont mémorisées (coefficients, unités, fournisseurs).")
-
-    # --- Chargement valeurs persistées ---
-    coeffs_cur = load_coefficients()
-    units_cur = load_units()
-    suppliers_cur = load_suppliers()
-
-    with st.expander("Coefficients (menu déroulant)", expanded=False):
-        dfc = pd.DataFrame({"Coefficient": coeffs_cur})
-        dfc2 = st.data_editor(dfc, num_rows="dynamic", use_container_width=True, key="coeffs_editor")
-        if st.button("Enregistrer coefficients", key="save_coeffs"):
-            save_coefficients(dfc2["Coefficient"].tolist())
-            st.success("Coefficients enregistrés.")
-
-    with st.expander("Unités (menu déroulant)", expanded=False):
-        dfu = pd.DataFrame({"Unité": units_cur})
-        dfu2 = st.data_editor(dfu, num_rows="dynamic", use_container_width=True, key="units_editor")
-        if st.button("Enregistrer unités", key="save_units"):
-            save_units(dfu2["Unité"].tolist())
-            st.success("Unités enregistrées.")
-
-    with st.expander("Fournisseurs (menus + en-têtes PDF/Excel)", expanded=False):
-        dfs = pd.DataFrame(suppliers_cur)
-        if dfs.empty:
-            dfs = pd.DataFrame(columns=["name", "code_client", "coord1", "coord2"])
-        dfs = dfs.rename(
-            columns={
-                "name": "Nom",
-                "code_client": "Code client",
-                "coord1": "Coordonnée 1",
-                "coord2": "Coordonnée 2",
-            }
-        )
-        dfs2 = st.data_editor(dfs, num_rows="dynamic", use_container_width=True, key="suppliers_editor")
-        if st.button("Enregistrer fournisseurs", key="save_suppliers"):
-            back = dfs2.rename(
-                columns={
-                    "Nom": "name",
-                    "Code client": "code_client",
-                    "Coordonnée 1": "coord1",
-                    "Coordonnée 2": "coord2",
-                }
-            )
-            save_suppliers(back.to_dict(orient="records"))
-            st.success("Fournisseurs enregistrés.")
-
     st.caption(
         "Conseil : utilise les fichiers d’origine (avec formules) ; l’app récupère les valeurs correctement."
     )
+
+    st.markdown("---")
+    st.header("Paramètres — Bons de commande")
+    store = ConfigStore()
+    # Charge la conf à chaque refresh (petits JSON)
+    coeffs = store.load_coefficients()
+    units = store.load_units()
+    suppliers = store.load_suppliers()
+
+    with st.expander("Configurer coefficients / unités / fournisseurs", expanded=False):
+        st.caption(
+            "Ces listes sont mémorisées (JSON) et utilisées pour les menus déroulants dans le bon de commande."
+        )
+
+        ctab1, ctab2, ctab3 = st.tabs(["Coefficients", "Unités", "Fournisseurs"])
+
+        with ctab1:
+            dfc = pd.DataFrame([{"name": c.name, "value": c.value, "default_unit": c.default_unit} for c in coeffs])
+            if dfc.empty:
+                dfc = pd.DataFrame([{"name": "1", "value": 1.0, "default_unit": "unité"}])
+            dfc_edit = st.data_editor(
+                dfc,
+                use_container_width=True,
+                num_rows="dynamic",
+                column_config={
+                    "name": st.column_config.TextColumn("Nom coefficient"),
+                    "value": st.column_config.NumberColumn("Valeur", step=0.01),
+                    "default_unit": st.column_config.TextColumn("Unité par défaut"),
+                },
+                key="cfg_coeffs",
+            )
+            if st.button("Enregistrer les coefficients", key="save_coeffs"):
+                store.save_coefficients(dfc_edit.to_dict("records"))
+                st.success("Coefficients enregistrés.")
+
+        with ctab2:
+            dfu = pd.DataFrame({"unit": units})
+            dfu_edit = st.data_editor(
+                dfu,
+                use_container_width=True,
+                num_rows="dynamic",
+                column_config={"unit": st.column_config.TextColumn("Unité")},
+                key="cfg_units",
+            )
+            if st.button("Enregistrer les unités", key="save_units"):
+                store.save_units([u for u in dfu_edit["unit"].astype(str).tolist() if u.strip()])
+                st.success("Unités enregistrées.")
+
+        with ctab3:
+            dfs = pd.DataFrame(
+                [
+                    {
+                        "name": s.name,
+                        "customer_code": s.customer_code,
+                        "coord1": s.coord1,
+                        "coord2": s.coord2,
+                    }
+                    for s in suppliers
+                ]
+            )
+            dfs_edit = st.data_editor(
+                dfs,
+                use_container_width=True,
+                num_rows="dynamic",
+                column_config={
+                    "name": st.column_config.TextColumn("Fournisseur"),
+                    "customer_code": st.column_config.TextColumn("Code client"),
+                    "coord1": st.column_config.TextColumn("Coordonnée 1"),
+                    "coord2": st.column_config.TextColumn("Coordonnée 2"),
+                },
+                key="cfg_suppliers",
+            )
+            if st.button("Enregistrer les fournisseurs", key="save_suppliers"):
+                store.save_suppliers(dfs_edit.to_dict("records"))
+                st.success("Fournisseurs enregistrés.")
 
 if not planning_file or not menu_file:
     st.info("Charge le planning et le menu pour afficher les tableaux et générer les documents.")
@@ -262,76 +279,92 @@ Donc si Mardi = 120 au déjeuner et 95 au dîner, tu verras deux barres (ou deux
     with tab_bc:
         st.subheader("Bon de commande")
         bon = build_bon_commande(planning, menu_items)
-        st.dataframe(bon, use_container_width=True, hide_index=True)
-
-        if st.button("Générer Bon de commande (Excel)", type="primary"):
-            out_path = _temp_out_path(".xlsx")
-            export_excel(bon, prod_dej_long, prod_din_long, out_path)
-            with open(out_path, "rb") as f:
-                st.download_button(
-                    "Télécharger Bon de commande.xlsx",
-                    data=f,
-                    file_name="Bon de commande.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-
-        st.divider()
-        st.subheader("Bons par fournisseur (après édition du bon)")
         st.caption(
-            "Étape 1 : télécharge le bon, puis complète les colonnes **Coefficient / Unité / Fournisseur** via les menus déroulants.\n"
-            "Étape 2 : upload le fichier modifié ici pour obtenir :\n"
-            "- 1 **classeur Excel** (1 feuille par fournisseur)\n"
-            "- 1 **PDF** (1 page par fournisseur) avec coordonnées dans l’en-tête."
+            "Tu peux **fusionner/renommer des lignes** en modifiant la colonne *Libellé* (elles seront regroupées au moment des bons par fournisseur)."
         )
 
-        bc_edited = st.file_uploader("Bon de commande édité (.xlsx)", type=["xlsx"], key="bc_edited")
-        cA, cB = st.columns(2)
+        # Aperçu dans l'app (édition légère)
+        bon_edit = st.data_editor(
+            bon,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key="bc_editor",
+        )
 
-        def _supplier_map() -> dict:
-            sup = load_suppliers()
-            return {s.get("name", "").strip(): s for s in sup if s.get("name", "").strip()}
+        # Charge les paramètres (au cas où la sidebar n'est pas ouverte)
+        store2 = ConfigStore()
+        coeffs2 = [
+            {"name": c.name, "value": float(c.value), "default_unit": c.default_unit}
+            for c in store2.load_coefficients()
+        ]
+        units2 = store2.load_units()
+        suppliers2 = [
+            {
+                "name": s.name,
+                "customer_code": s.customer_code,
+                "coord1": s.coord1,
+                "coord2": s.coord2,
+            }
+            for s in store2.load_suppliers()
+        ]
 
-        if bc_edited is not None:
-            try:
-                bc_path = _save_uploaded_file(bc_edited, suffix=".xlsx")
-                # Par défaut on lit la feuille 'Bon de commande' si elle existe
-                xls = pd.ExcelFile(bc_path)
-                sheet = "Bon de commande" if "Bon de commande" in xls.sheet_names else xls.sheet_names[0]
-                bc_df = pd.read_excel(bc_path, sheet_name=sheet)
-            except Exception as e:
-                st.error(f"Impossible de lire le classeur: {e}")
-                bc_df = None
+        cbc1, cbc2 = st.columns([1, 1])
+        with cbc1:
+            if st.button("Générer Bon de commande (Excel)", type="primary"):
+                out_path = _temp_out_path(".xlsx")
+                export_excel(
+                    bon_edit,
+                    prod_dej_long,
+                    prod_din_long,
+                    out_path,
+                    coefficients=coeffs2,
+                    units=units2,
+                    suppliers=suppliers2,
+                )
+                with open(out_path, "rb") as f:
+                    st.download_button(
+                        "Télécharger Bon de commande.xlsx",
+                        data=f,
+                        file_name="Bon de commande.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
 
-            if bc_df is not None:
-                with cA:
-                    if st.button("Générer Excel (1 feuille / fournisseur)", key="gen_bc_xlsx"):
-                        out_xlsx = _temp_out_path(".xlsx")
-                        export_orders_per_supplier_excel(
-                            bon_commande_df=bc_df,
-                            out_xlsx_path=out_xlsx,
-                            supplier_infos=_supplier_map(),
-                        )
+        with cbc2:
+            st.markdown("**Bons par fournisseur (après édition du bon)**")
+            st.caption(
+                "1) Télécharge le bon Excel, complète les colonnes Coefficient/Unité/Fournisseur/Libellé. "
+                "2) Ré-uploade le fichier ici pour générer 1 bon par fournisseur."
+            )
+            bc_filled = st.file_uploader("Bon de commande rempli (.xlsx)", type=["xlsx"], key="bc_filled")
+            if bc_filled is not None:
+                try:
+                    df_filled = pd.read_excel(bc_filled, sheet_name="Bon de commande")
+                except Exception:
+                    df_filled = pd.read_excel(bc_filled)
+
+                out_xlsx = _temp_out_path(".xlsx")
+                out_pdf = _temp_out_path(".pdf")
+
+                cbtn1, cbtn2 = st.columns(2)
+                with cbtn1:
+                    if st.button("Générer Excel (1 feuille / fournisseur)", key="gen_sup_xlsx"):
+                        export_orders_per_supplier_excel(df_filled, out_xlsx, suppliers=suppliers2)
                         with open(out_xlsx, "rb") as f:
                             st.download_button(
-                                "Télécharger Bons par fournisseur.xlsx",
+                                "Télécharger Bons fournisseurs.xlsx",
                                 data=f,
-                                file_name="Bons par fournisseur.xlsx",
+                                file_name="Bons fournisseurs.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             )
-
-                with cB:
-                    if st.button("Générer PDF (1 page / fournisseur)", key="gen_bc_pdf"):
-                        out_pdf = _temp_out_path(".pdf")
-                        export_orders_per_supplier_pdf(
-                            bon_commande_df=bc_df,
-                            out_pdf_path=out_pdf,
-                            supplier_infos=_supplier_map(),
-                        )
+                with cbtn2:
+                    if st.button("Générer PDF (1 page / fournisseur)", key="gen_sup_pdf"):
+                        export_orders_per_supplier_pdf(df_filled, out_pdf, suppliers=suppliers2)
                         with open(out_pdf, "rb") as f:
                             st.download_button(
-                                "Télécharger Bons par fournisseur.pdf",
+                                "Télécharger Bons fournisseurs.pdf",
                                 data=f,
-                                file_name="Bons par fournisseur.pdf",
+                                file_name="Bons fournisseurs.pdf",
                                 mime="application/pdf",
                             )
 
