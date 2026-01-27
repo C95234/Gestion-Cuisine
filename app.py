@@ -3,6 +3,8 @@ import traceback
 from pathlib import Path
 import pandas as pd
 import datetime as dt
+import importlib
+import inspect
 
 # ✅ DEBUG GLOBAL : on capture toute erreur d'import des modules "src"
 try:
@@ -17,7 +19,22 @@ try:
         export_bons_livraison_pdf,
     )
 
-    from src.config_store import ConfigStore
+    # --- DEBUG spécifique ConfigStore ---
+    cs = importlib.import_module("src.config_store")
+
+    st.error("DEBUG src.config_store")
+    st.write("Fichier chargé :")
+    st.code(getattr(cs, "__file__", "<?>"))
+
+    st.write("Attributs du module :")
+    st.code("\n".join(dir(cs)))
+
+    st.write("Début du fichier :")
+    src = inspect.getsource(cs)
+    st.code("\n".join(src.splitlines()[:120]))
+
+    # tentative d'accès
+    ConfigStore = getattr(cs, "ConfigStore")
 
     from src.order_forms import (
         export_orders_per_supplier_excel,
@@ -36,14 +53,13 @@ try:
     from src.allergens.generator import generate_allergen_workbook
 
 except Exception as e:
-    st.error("💥 Erreur lors d'un import (module src.*)")
-    st.write("**repr(e):**")
+    st.error("💥 Erreur import module src.*")
     st.code(repr(e))
-    st.write("**Trace complète :**")
     st.code(traceback.format_exc())
-    st.stop()  # 🔥 IMPORTANT : on STOPPE sans laisser Streamlit afficher l'écran redacted
+    st.stop()
 
 DAY_NAMES = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+
 
 
 def format_pivot_for_display(piv: pd.DataFrame) -> pd.DataFrame:
