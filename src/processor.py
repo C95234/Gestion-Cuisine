@@ -1551,20 +1551,18 @@ def export_excel(
     units: Optional[List[str]] = None,
     suppliers: Optional[List[Dict[str, str]]] = None,
 ) -> None:
-    # Options pour listes déroulantes / lookup dans Excel
-    # - coefficients: liste de dict {name, value, default_unit}
-    # - units: liste de chaînes
-    # - suppliers: liste de dict {name, customer_code, coord1, coord2}
-    #
-    # NB: on garde des valeurs par défaut si None pour rester compatible.
-
-    """Export the deliverables into one Excel file with 3 sheets.
-
-    Objectif: conserver une bonne lisibilité (mise en forme basique type "table"):
-    - En-têtes en gras, fond gris clair
-    - Bordures fines, retour à la ligne, gel de la 1ère ligne
-    - Auto-filter + ajustement des largeurs de colonnes
     """
+    Export dans un Excel avec 3 feuilles:
+      - Bon de commande
+      - Déjeuner (pivot)
+      - Dîner (pivot)
+
+    ✅ Correction métier:
+    - Le coefficient = multiplicateur (name -> value)
+    - L'unité du coefficient est IGNOREE.
+    - L'unité d'achat = colonne "Unité" du bon (Excel), point.
+    """
+
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         bon_commande.to_excel(writer, sheet_name="Bon de commande", index=False)
 
@@ -1572,27 +1570,25 @@ def export_excel(
             if long_df is None or long_df.empty:
                 return pd.DataFrame(columns=["Regime"] + DAY_NAMES + ["Total semaine"])
             df = long_df.copy()
-            # normalise colonnes attendues
             if "Nb" not in df.columns:
-                # fallback si autre nom
                 for cand in ["Nb_personnes", "Nombre", "Quantite"]:
                     if cand in df.columns:
                         df = df.rename(columns={cand: "Nb"})
                         break
-            # pivot
+
             piv = df.pivot_table(index="Regime", columns="Jour", values="Nb", aggfunc="sum", fill_value=0)
-            # assure colonnes jours
             for d in DAY_NAMES:
                 if d not in piv.columns:
                     piv[d] = 0
             piv = piv[DAY_NAMES]
             piv["Total semaine"] = piv.sum(axis=1)
-            piv = piv[piv["Total semaine"] > 0]
-            piv = piv.reset_index()
-            # ligne total jour
-            total_row = pd.DataFrame([["TOTAL JOUR"] + [int(piv[d].sum()) for d in DAY_NAMES] + [int(piv["Total semaine"].sum())]], columns=["Regime"] + DAY_NAMES + ["Total semaine"])
-            out = pd.concat([piv, total_row], ignore_index=True)
-            return out
+            piv = piv[piv["Total semaine"] > 0].reset_index()
+
+            total_row = pd.DataFrame(
+                [["TOTAL JOUR"] + [int(piv[d].sum()) for d in DAY_NAMES] + [int(piv["Total semaine"].sum())]],
+                columns=["Regime"] + DAY_NAMES + ["Total semaine"],
+            )
+            return pd.concat([piv, total_row], ignore_index=True)
 
         dej_piv = _pivot_prod(prod_dej)
         din_piv = _pivot_prod(prod_din)
@@ -1604,24 +1600,25 @@ def export_excel(
 
         # ----------------- Listes pour menus déroulants -----------------
         if coefficients is None:
-            coefficients = [
-                {"name": "1", "value": 1.0, "default_unit": "unité"},
-            ]
+            # accepte {name, value, default_unit} mais on ignore default_unit
+            coefficients = [{"name": "1", "value": 1.0}]
+
         if units is None:
             units = ["kg", "g", "L", "mL", "unité", "pièce"]
+
         if suppliers is None:
             suppliers = []
 
-        # Feuille cachée "Listes" (référencée par validations et formules)
+        # Feuille cachée "Listes"
         if "Listes" in wb.sheetnames:
             ws_list = wb["Listes"]
             ws_list.delete_rows(1, ws_list.max_row)
         else:
             ws_list = wb.create_sheet("Listes")
 
+        # ✅ On ne met PLUS "Unité défaut" (source du mélange)
         ws_list["A1"].value = "Coefficient"
         ws_list["B1"].value = "Valeur"
-        ws_list["C1"].value = "Unité défaut"
 
         for i, c in enumerate(coefficients, start=2):
             ws_list.cell(row=i, column=1).value = str(c.get("name", "")).strip()
@@ -1629,7 +1626,6 @@ def export_excel(
                 ws_list.cell(row=i, column=2).value = float(c.get("value", 1.0))
             except Exception:
                 ws_list.cell(row=i, column=2).value = 1.0
-            ws_list.cell(row=i, column=3).value = str(c.get("default_unit", "unité") or "unité")
 
         ws_list["E1"].value = "Unités"
         for i, u in enumerate(units, start=2):
@@ -1674,29 +1670,39 @@ def export_excel(
         if col_coef:
             dv_coef = DataValidation(type="list", formula1=coef_range, allow_blank=True)
             ws_bc.add_data_validation(dv_coef)
-            dv_coef.add(f"{openpyxl.utils.get_column_letter(col_coef)}2:{openpyxl.utils.get_column_letter(col_coef)}{ws_bc.max_row}")
+            dv_coef.add(
+                f"{openpyxl.utils.get_column_letter(col_coef)}2:"
+                f"{openpyxl.utils.get_column_letter(col_coef)}{ws_bc.max_row}"
+            )
 
         if col_unit:
             dv_unit = DataValidation(type="list", formula1=unit_range, allow_blank=True)
             ws_bc.add_data_validation(dv_unit)
-            dv_unit.add(f"{openpyxl.utils.get_column_letter(col_unit)}2:{openpyxl.utils.get_column_letter(col_unit)}{ws_bc.max_row}")
+            dv_unit.add(
+                f"{openpyxl.utils.get_column_letter(col_unit)}2:"
+                f"{openpyxl.utils.get_column_letter(col_unit)}{ws_bc.max_row}"
+            )
 
         if col_sup:
             dv_sup = DataValidation(type="list", formula1=sup_range, allow_blank=True)
             ws_bc.add_data_validation(dv_sup)
-            dv_sup.add(f"{openpyxl.utils.get_column_letter(col_sup)}2:{openpyxl.utils.get_column_letter(col_sup)}{ws_bc.max_row}")
+            dv_sup.add(
+                f"{openpyxl.utils.get_column_letter(col_sup)}2:"
+                f"{openpyxl.utils.get_column_letter(col_sup)}{ws_bc.max_row}"
+            )
 
+        # ✅ Quantité = Effectif * valeur(coefficient). L'unité vient UNIQUEMENT de la colonne "Unité".
         if col_eff and col_coef and col_qty:
             eff_letter = openpyxl.utils.get_column_letter(col_eff)
             coef_letter = openpyxl.utils.get_column_letter(col_coef)
-            # lookup via VLOOKUP sur Listes!A:B
-            # =ROUND(Effectif * IFERROR(VLOOKUP(Coefficient, Listes!$A$2:$B$N, 2, FALSE), 1), 0)
+
+            # VLOOKUP sur Listes!A:B (Coefficient -> Valeur)
             for r in range(2, ws_bc.max_row + 1):
                 ws_bc.cell(row=r, column=col_qty).value = (
                     f"=ROUND({eff_letter}{r}*IFERROR(VLOOKUP({coef_letter}{r},Listes!$A$2:$B${1+n_coef},2,FALSE),1),0)"
                 )
 
-
+        # ----------------- Styles -----------------
         thin = Side(style="thin", color="9E9E9E")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
         header_fill = PatternFill("solid", fgColor="EDEDED")
@@ -1725,18 +1731,16 @@ def export_excel(
             else:
                 ws.freeze_panes = "A2"
 
-            # Apply styles + borders
             max_row = ws.max_row
             max_col = ws.max_column
 
-            # Header row
+            # Header
             for c in range(1, max_col + 1):
                 cell = ws.cell(row=header_row, column=c)
                 cell.font = header_font
                 cell.fill = header_fill
                 cell.alignment = header_align
                 cell.border = border
-
             ws.row_dimensions[header_row].height = 24
 
             # Body
@@ -1744,23 +1748,20 @@ def export_excel(
                 ws.row_dimensions[r].height = 18
                 for c in range(1, max_col + 1):
                     cell = ws.cell(row=r, column=c)
-                    # Pivot sheets: numeric columns centered
                     if name in ("Déjeuner", "Dîner") and c >= 2:
                         cell.alignment = cell_align_center
                     else:
                         cell.alignment = cell_align
                     cell.border = border
 
-                # Banded rows for readability
                 if r % 2 == 0:
                     for c in range(1, max_col + 1):
                         ws.cell(row=r, column=c).fill = band_fill
 
-            # Emphasize first column and TOTAL row for pivot sheets
+            # Emphase pivot
             if name in ("Déjeuner", "Dîner"):
                 for r in range(header_row + 1, max_row + 1):
                     ws.cell(row=r, column=1).font = Font(bold=True)
-                # TOTAL row (last row)
                 if max_row >= 2 and str(ws.cell(row=max_row, column=1).value).strip().upper() == "TOTAL":
                     for c in range(1, max_col + 1):
                         ws.cell(row=max_row, column=c).font = Font(bold=True)
@@ -1769,33 +1770,22 @@ def export_excel(
             # Auto-filter
             ws.auto_filter.ref = f"A{header_row}:{openpyxl.utils.get_column_letter(max_col)}{max_row}"
 
-            # Column widths (after styling)
-            # IMPORTANT: after we add a merged title row (Déjeuner/Dîner),
-            # the first row contains MergedCell objects in columns > A.
-            # Those cells don't always expose `column_letter`, so we compute
-            # the column letter from the index instead.
+            # Largeurs colonnes
             for c_idx in range(1, max_col + 1):
                 col_letter = openpyxl.utils.get_column_letter(c_idx)
                 max_len = 0
-                # Use a bounded scan for performance
                 for r_idx in range(1, min(max_row, 400) + 1):
                     cell = ws.cell(row=r_idx, column=c_idx)
                     if cell.value is None:
                         continue
                     max_len = max(max_len, len(str(cell.value)))
-                # keep sheets readable
                 ws.column_dimensions[col_letter].width = min(max(max_len + 2, 10), 60)
 
-            # Tighter, consistent widths for pivot sheets
             if name in ("Déjeuner", "Dîner"):
-                # Regime column
                 ws.column_dimensions["A"].width = 34
-                # Day columns
-                for idx, day in enumerate(DAY_NAMES, start=2):
+                for idx, _day in enumerate(DAY_NAMES, start=2):
                     ws.column_dimensions[openpyxl.utils.get_column_letter(idx)].width = 12
-                # Total column
                 ws.column_dimensions[openpyxl.utils.get_column_letter(2 + len(DAY_NAMES))].width = 12
 
-            # Page setup (simple)
             ws.page_setup.fitToWidth = 1
             ws.page_setup.fitToHeight = 0
