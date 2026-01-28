@@ -37,6 +37,7 @@ def _supplier_lookup(suppliers: List[Dict[str, str]]) -> Dict[str, SupplierInfo]
 
 def group_lines_for_order(df: pd.DataFrame) -> pd.DataFrame:
     """Version allégée pour bon fournisseur :
+<<<<<<< HEAD
     - Regroupe uniquement par Produit (en privilégiant 'Libellé' si présent)
     - Somme des Quantités
     - Sortie : Produit | Quantité
@@ -65,38 +66,31 @@ def group_lines_for_order(df: pd.DataFrame) -> pd.DataFrame:
     )
     return grouped
 
+=======
+    ➜ Regroupe uniquement par Produit
+    ➜ Somme des Quantités
+    ➜ Sortie = Produit | Quantité
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Produit", "Quantité"])
+>>>>>>> 12dd7aae5f59b52da015657b2a0f487d3ea9d973
 
     d = df.copy()
-    # normalise colonnes
-    for c in ["Jour(s)", "Jour", "Repas", "Typologie", "Produit", "Libellé", "Effectif", "Coefficient", "Unité", "Fournisseur", "Quantité"]:
-        if c not in d.columns:
-            d[c] = "" if c not in ("Effectif", "Quantité") else 0
+    if "Libellé" in d.columns:
+        d["Produit"] = d["Libellé"].fillna(d.get("Produit", ""))
+    elif "Produit" not in d.columns:
+        d["Produit"] = ""
 
-    d["Jour(s)"] = d["Jour(s)"].fillna(d["Jour"].astype(str))
-    d["Libellé"] = d["Libellé"].fillna("")
-    if (d["Libellé"].astype(str).str.strip() == "").all():
-        d["Libellé"] = d["Produit"].astype(str)
-
-    d["Effectif"] = pd.to_numeric(d["Effectif"], errors="coerce").fillna(0).astype(int)
-    d["Quantité"] = pd.to_numeric(d["Quantité"], errors="coerce").fillna(0).astype(int)
+    d["Quantité"] = pd.to_numeric(d.get("Quantité", 0), errors="coerce").fillna(0)
 
     grouped = (
-        d.groupby(
-            ["Repas", "Typologie", "Libellé", "Coefficient", "Unité"],
-            as_index=False,
-        )
-        .agg(
-            {
-                "Jour(s)": lambda s: ", ".join(sorted({str(x).strip() for x in s if str(x).strip()})),
-                "Effectif": "sum",
-                "Quantité": "sum",
-            }
-        )
-        .rename(columns={"Libellé": "Produit"})
+        d.groupby("Produit", as_index=False)["Quantité"]
+        .sum()
+        .sort_values("Produit")
     )
-    # ordre
-    cols = ["Jour(s)", "Repas", "Typologie", "Produit", "Effectif", "Coefficient", "Unité", "Quantité"]
-    return grouped[cols].sort_values(["Repas", "Typologie", "Produit"]).reset_index(drop=True)
+
+    return grouped
+
 
 
 
