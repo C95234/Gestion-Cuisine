@@ -75,45 +75,85 @@ def export_orders_per_supplier_pdf(
 ) -> None:
 
     from reportlab.lib import colors
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
-    from reportlab.lib.units import mm
     from reportlab.lib.utils import ImageReader
     from pathlib import Path
 
     suppliers = suppliers or []
     sup_map = _supplier_lookup(suppliers)
 
-    df = bon_df.copy()
+    df = bon_df.copy() if bon_df is not None else pd.DataFrame()
     df["Fournisseur"] = df.get("Fournisseur", "").fillna("").astype(str).str.strip()
 
     styles = getSampleStyleSheet()
-    cell_style = styles["Normal"]
 
-    # === CHARGEMENT LOGO ===
-    base_dir = Path(__file__).resolve().parent
-    watermark_path = base_dir / "assets" / "watermark.jpg"
+    # ========= Watermark : recherche robuste =========
+    def _find_watermark() -> Path | None:
+        candidates = ["watermark.png", "watermark.jpg", "watermark.jpeg"]
 
-    watermark = None
-    if watermark_path.exists():
-        watermark = ImageReader(str(watermark_path))
+        base_dir = Path(__file__).resolve().parent  # .../src
+
+        # 1) src/assets
+        for name in candidates:
+            p = base_dir / "assets" / name
+            if p.exists():
+                return p
+
+        # 2) assets à la racine du projet (au cas où)
+        for name in candidates:
+            p = base_dir.parent / "assets" / name
+            if p.exists():
+                return p
+
+        # 3) cwd (streamlit peut changer le working dir)
+        cwd = Path.cwd()
+        for name in candidates:
+            p = cwd / "src" / "assets" / name
+            if p.exists():
+                return p
+            p = cwd / "assets" / name
+            if p.exists():
+                return p
+
+        return None
+
+    watermark_path = _find_watermark()
+    watermark_reader = None
+    if watermark_path is not None:
+        # volontairement pas silencieux : si ImageReader casse, tu veux le savoir
+        watermark_reader = ImageReader(str(watermark_path))
 
     def _on_page(c, doc):
-        if watermark:
-            w, h = A4
-            img_w = 350
-            img_h = 350
-            x = (w - img_w) / 2
-            y = (h - img_h) / 2
-            c.drawImage(watermark, x, y, width=img_w, height=img_h)
+        c.saveState()
 
+        if watermark_reader is None:
+            # DEBUG visible => si tu vois ça, c’est juste ton fichier image qui n’est pas au bon endroit / bon nom
+            c.setFont("Helvetica", 10)
+            c.setFillGray(0.85)
+            c.drawString(40, A4[1] - 40, "WATERMARK INTROUVABLE (mets watermark.png/jpg dans src/assets)")
+        else:
+            w, h = A4
+            img_w, img_h = 360, 360
+            x = (w - img_w) / 2
+            y = (h - img_h) / 2 - 20
+            c.drawImage(watermark_reader, x, y, width=img_w, height=img_h)
+
+        c.restoreState()
+
+        # pagination
         c.setFont("Helvetica", 8)
+        c.setFillColor(colors.black)
         c.drawRightString(A4[0] - 20, 15, f"Page {doc.page}")
 
     doc = SimpleDocTemplate(out_pdf_path, pagesize=A4)
     story = []
 
-    for sup_name, part in df.groupby("Fournisseur"):
+    # Evite une page blanche finale : on ne met PageBreak qu’entre fournisseurs
+    suppliers_list = list(df.groupby("Fournisseur")) if not df.empty else []
+    for idx, (sup_name, part) in enumerate(suppliers_list):
+        sup_name = str(sup_name or "").strip() or "(sans fournisseur)"
         info = sup_map.get(sup_name, SupplierInfo(name=sup_name))
         lines = group_lines_for_order(part)
 
@@ -123,15 +163,23 @@ def export_orders_per_supplier_pdf(
 
         data = [["Produit", "Quantité", "Unité"]]
         for _, r in lines.iterrows():
-            data.append([r["Produit"], str(r["Quantité"]), r["Unité"]])
+            data.append([str(r.get("Produit", "")), str(r.get("Quantité", "")), str(r.get("Unité", ""))])
 
         t = Table(data, colWidths=[300, 80, 80])
-        t.setStyle(TableStyle([
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-        ]))
+        t.setStyle(
+            TableStyle(
+                [
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+                ]
+            )
+        )
 
         story.append(t)
-        story.append(PageBreak())
+
+        if idx < len(suppliers_list) - 1:
+            story.append(PageBreak())
 
     doc.build(story, onFirstPage=_on_page, onLaterPages=_on_page)
