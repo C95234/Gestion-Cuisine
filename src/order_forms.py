@@ -290,14 +290,19 @@ def export_orders_per_supplier_pdf(
         leading=11,
     )
 
-    # Watermark path: src/assets/watermark.png (chemin absolu)
-    watermark_path = (Path(__file__).resolve().parent / "assets" / "watermark.png")
+    # Watermark (logo en fond) : on tente PNG puis JPG (JPG fonctionne même sans Pillow)
+    base_dir = Path(__file__).resolve().parent  # .../src
+    watermark_png = base_dir / "assets" / "watermark.png"
+    watermark_jpg = base_dir / "assets" / "watermark.jpg"
+
     watermark_reader = None
-    if watermark_path.exists():
-        try:
-            watermark_reader = ImageReader(str(watermark_path))
-        except Exception:
-            watermark_reader = None
+    for p in [watermark_png, watermark_jpg]:
+        if p.exists():
+            try:
+                watermark_reader = ImageReader(str(p))
+                break
+            except Exception:
+                watermark_reader = None
 
     def _on_page(canvas_obj, doc_obj):
         canvas_obj.saveState()
@@ -305,14 +310,12 @@ def export_orders_per_supplier_pdf(
         # Watermark (fond)
         if watermark_reader is not None:
             try:
-                # transparence si dispo
                 if hasattr(canvas_obj, "setFillAlpha"):
-                    canvas_obj.setFillAlpha(0.12)
+                    canvas_obj.setFillAlpha(0.18)
                 w, h = A4
-                img_w, img_h = 360, 360
+                img_w, img_h = 420, 420
                 x = (w - img_w) / 2
-                y = (h - img_h) / 2 - 10
-                # drawImage "simple" (compatibilité maximale)
+                y = (h - img_h) / 2 - 30
                 canvas_obj.drawImage(watermark_reader, x, y, width=img_w, height=img_h, mask="auto")
                 if hasattr(canvas_obj, "setFillAlpha"):
                     canvas_obj.setFillAlpha(1)
