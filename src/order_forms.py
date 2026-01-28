@@ -313,10 +313,10 @@ def export_orders_per_supplier_pdf(
                 if hasattr(canvas_obj, "setFillAlpha"):
                     canvas_obj.setFillAlpha(0.18)
                 w, h = A4
-                img_w, img_h = 420, 420
+                img_w, img_h = 300, 300
                 x = (w - img_w) / 2
                 y = (h - img_h) / 2 - 30
-                canvas_obj.drawImage(watermark_reader, x, y, width=img_w, height=img_h, mask="auto")
+                canvas_obj.drawImage(watermark_reader, x, y, width=img_w, height=img_h)
                 if hasattr(canvas_obj, "setFillAlpha"):
                     canvas_obj.setFillAlpha(1)
             except Exception:
