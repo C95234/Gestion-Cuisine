@@ -1130,10 +1130,11 @@ def export_bons_livraison_pdf(
             return yy - 8
 
         def ensure_space(needed_height: float) -> float:
-            nonlocal y
-            if y - needed_height < y_min:
-                c.showPage()
-                y = _redraw_header_suite()
+            """Garde tout sur une seule page.
+
+            Au lieu de créer une page "(suite)", on laisse le contenu se tasser via
+            des paramètres de mise en page (police/interlignage) plus compacts.
+            """
             return y
 
         y -= line_h
@@ -1228,28 +1229,126 @@ def export_bons_livraison_pdf(
         # Body
         y = box_top - box_h - 10
 
+        # --- Section régimes + menus ---
+        # Objectif: tenir sur une seule page (site, date) en compactant automatiquement
+        # la police et l'interligne si nécessaire.
         regs = regimes_for_site(date_val, site_key)
+
+        # Espace disponible pour le corps (on garde y_min pour les signatures)
+        available_h = max(0.0, y - y_min)
+
+        def _bullet_wrapped_lines(text: str, font_size: float) -> int:
+            bullet = "• "
+            font_name = "Helvetica"
+            first_indent = c.stringWidth(bullet, font_name, font_size)
+            lines = _wrap_text(text, font_name, font_size, max_width - first_indent)
+            return max(1, len(lines or []))
+
+        def _estimate_needed_height(scale: float) -> float:
+            """Estime la hauteur consommée par la section régimes/menus."""
+            fs = 9.0 * scale
+            lead = 10.0 * scale
+            gap12 = 12.0 * scale
+            gap6 = 6.0 * scale
+
+            needed = 0.0
+            for reg in regs:
+                dej_n = count_for(df_dej, site_key, reg, date_val)
+                din_n = count_for(df_din, site_key, reg, date_val)
+                if dej_n <= 0 and din_n <= 0:
+                    continue
+
+                # Titre régime
+                needed += gap12
+
+                # Déjeuner label + passage au contenu
+                needed += gap12 + gap12
+                if is_mixe_lisse(reg):
+                    # Une ligne de quantité
+                    needed += gap12
+                else:
+                    reg_norm = _norm(reg)
+                    lines = menu_lines.get((date_val, "Déjeuner", reg))
+                    if not lines:
+                        target = set(reg_norm.split())
+                        best = None
+                        best_score = -1
+                        for (d, repas, rlabel), lns in menu_lines.items():
+                            if d != date_val or repas != "Déjeuner":
+                                continue
+                            score = len(target & set(_norm(rlabel).split()))
+                            if score > best_score:
+                                best_score = score
+                                best = lns
+                        lines = best
+                    lines = [ln for ln in (lines or []) if clean_text_delivery(ln) and clean_text_delivery(ln) != "—"]
+                    if not lines:
+                        lines = ["—"]
+                    for ln in lines:
+                        needed += _bullet_wrapped_lines(ln, fs) * lead
+
+                # Dîner label + passage au contenu
+                needed += gap6 + gap12 + gap12
+                if is_mixe_lisse(reg):
+                    needed += gap12
+                else:
+                    reg_norm = _norm(reg)
+                    lines = menu_lines.get((date_val, "Dîner", reg))
+                    if not lines:
+                        target = set(reg_norm.split())
+                        best = None
+                        best_score = -1
+                        for (d, repas, rlabel), lns in menu_lines.items():
+                            if d != date_val or repas != "Dîner":
+                                continue
+                            score = len(target & set(_norm(rlabel).split()))
+                            if score > best_score:
+                                best_score = score
+                                best = lns
+                        lines = best
+                    lines = [ln for ln in (lines or []) if clean_text_delivery(ln) and clean_text_delivery(ln) != "—"]
+                    if not lines:
+                        lines = ["—"]
+                    for ln in lines:
+                        needed += _bullet_wrapped_lines(ln, fs) * lead
+
+                # Espace entre régimes
+                needed += gap6
+
+            return needed
+
+        # Choix d'un facteur de compaction
+        needed_h = _estimate_needed_height(1.0)
+        scale = 1.0
+        if needed_h > available_h and needed_h > 0:
+            scale = max(0.75, min(1.0, (available_h / needed_h) * 0.98))  # petite marge
+
+        fs = 9.0 * scale
+        lead = 10.0 * scale
+        gap12 = 12.0 * scale
+        gap6 = 6.0 * scale
+
         for reg in regs:
             dej_n = count_for(df_dej, site_key, reg, date_val)
             din_n = count_for(df_din, site_key, reg, date_val)
             if dej_n <= 0 and din_n <= 0:
                 continue
 
-            y -= 12
-            c.setFont("Helvetica-Bold", 9)
+            y -= gap12
+            c.setFont("Helvetica-Bold", fs)
             c.drawString(x0, y, f"{reg} —  Déj {dej_n} / Dîn {din_n}")
 
             # Déjeuner
-            y -= 12
-            c.setFont("Helvetica-Bold", 9)
+            y -= gap12
+            c.setFont("Helvetica-Bold", fs)
             c.drawString(x0 + 12, y, "Déjeuner")
-            y -= 12
-            c.setFont("Helvetica", 9)
+            y -= gap12
+            c.setFont("Helvetica", fs)
 
             reg_norm = _norm(reg)
             if is_mixe_lisse(reg):
                 c.drawString(x0 + 30, y, f"• Quantité mixé/lissé à livrer : {dej_n}")
-                y -= 12
+                y -= gap12
             else:
                 lines = menu_lines.get((date_val, "Déjeuner", reg))
                 if not lines:
@@ -1270,18 +1369,18 @@ def export_bons_livraison_pdf(
                 if not lines:
                     lines = ["—"]
                 for ln in lines:
-                    ensure_space(14)
-                    y = _draw_bullet(x0 + 30, y, ln, max_width, font_size=9, leading=10)
+                    y = _draw_bullet(x0 + 30, y, ln, max_width, font_size=fs, leading=lead)
 
             # Dîner
-            y -= 6
-            c.setFont("Helvetica-Bold", 9)
+            y -= gap6
+            c.setFont("Helvetica-Bold", fs)
             c.drawString(x0 + 12, y, "Dîner")
-            y -= 12
-            c.setFont("Helvetica", 9)
+            y -= gap12
+            c.setFont("Helvetica", fs)
+
             if is_mixe_lisse(reg):
                 c.drawString(x0 + 30, y, f"• Quantité mixé/lissé à livrer : {din_n}")
-                y -= 12
+                y -= gap12
             else:
                 lines = menu_lines.get((date_val, "Dîner", reg))
                 if not lines:
@@ -1300,11 +1399,10 @@ def export_bons_livraison_pdf(
                 if not lines:
                     lines = ["—"]
                 for ln in lines:
-                    ensure_space(14)
-                    y = _draw_bullet(x0 + 30, y, ln, max_width, font_size=9, leading=10)
+                    y = _draw_bullet(x0 + 30, y, ln, max_width, font_size=fs, leading=lead)
 
             # Space between regimes
-            y -= 6
+            y -= gap6
 
         # Footer signatures
         c.setLineWidth(1)
