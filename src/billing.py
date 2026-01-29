@@ -1,5 +1,12 @@
-
 from __future__ import annotations
+
+from typing import List, Optional, Dict
+
+import pandas as pd
+import openpyxl
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side, numbers
+
 
 def _write_recap_sheet(
     wb: openpyxl.Workbook,
