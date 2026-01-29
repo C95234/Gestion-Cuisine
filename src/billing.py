@@ -1,5 +1,6 @@
 
-from __future_
+from __future__ import annotations
+
 def _write_recap_sheet(
     wb: openpyxl.Workbook,
     records: pd.DataFrame,
