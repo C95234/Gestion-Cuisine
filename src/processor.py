@@ -546,12 +546,10 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
     """
     Parse menu excel.
 
-    - Détection dynamique blocs 5 ou 6 lignes
-    - Gestion correcte des cellules fusionnées
-    - Empêche la "bave" entre régimes
-    - Empêche disparition aléatoire laitage/dessert
+    Idée clé: on NE suppose PAS que chaque journée fait exactement 12 lignes.
+    On scanne la colonne A pour trouver toutes les dates, puis on lit les blocs
+    Déjeuner (date_row..date_row+5) et Dîner (date_row+6..date_row+11).
     """
-
     wb = openpyxl.load_workbook(path, data_only=True)
     if sheet_name not in wb.sheetnames:
         raise ValueError(f"Feuille '{sheet_name}' introuvable. Feuilles dispo: {wb.sheetnames}")
@@ -564,6 +562,7 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
     for c in range(2, ws.max_column + 1):
         h = header.get(c, "")
         g = group.get(c, "")
+        # Certains fichiers ont "HYPOCALORIQUE" en ligne 2 (groupe) mais un header vide.
         if not h and not g:
             continue
 
@@ -582,46 +581,18 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
 
     items: List[MenuItem] = []
 
-    # ================= FUSIONS =================
-
-    def merged_value_any(row: int, col: int) -> str:
-        cell = ws.cell(row, col)
-        if cell.value not in (None, ""):
-            return clean_text(cell.value)
-
-        for rng in ws.merged_cells.ranges:
-            if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
-                v = ws.cell(rng.min_row, rng.min_col).value
-                return clean_text(v)
-        return ""
-
-    def merged_value_strict(row: int, col: int) -> str:
-        cell = ws.cell(row, col)
-        if cell.value not in (None, ""):
-            return clean_text(cell.value)
-
-        for rng in ws.merged_cells.ranges:
-            if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
-                if rng.min_col != col:
-                    return ""
-                v = ws.cell(rng.min_row, rng.min_col).value
-                return clean_text(v)
-        return ""
-
-    # ================= DÉTECTION TYPE LIGNE =================
-
     def _norm_kw(s: str) -> str:
         s = clean_text(s).lower()
         s = "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
         return s
 
-    _DESSERT_KW = ("compote", "fruit", "gateau", "tarte", "flan", "creme", "mousse", "riz au lait", "ile flottante")
-    _DAIRY_KW = ("fromage", "yaourt", "fromage blanc", "petit suisse", "camembert", "emmental", "kiri", "babybel")
+    _DESSERT_KW = ("compote", "fruit", "gateau", "gateau", "tarte", "flan", "creme", "crème", "mousse", "riz au lait", "ile flottante")
+    _DAIRY_KW = ("fromage", "yaourt", "yogourt", "fromage blanc", "petit suisse", "camembert", "emmental", "kiri", "tartare", "babybel", "gouda", "boursin")
 
     def _row_score(row: int, kws: tuple[str, ...]) -> int:
         score = 0
         for c in regime_by_col.keys():
-            v = merged_value_any(row, c)
+            v = clean_text(ws.cell(row, c).value)
             if not v:
                 continue
             t = _norm_kw(v)
@@ -630,7 +601,16 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
         return score
 
     def detect_block_height(start_row: int) -> int:
-        candidates = [(6, 4, 5), (5, 3, 4)]
+        """Détermine si un bloc repas fait 5 lignes (1 entrée, 2 plats, 1 laitage, 1 dessert)
+        ou 6 lignes (1 entrée, 3 lignes de plat/garniture, 1 laitage, 1 dessert).
+
+        Objectif: éviter les décalages quand certaines journées n'ont que 2 lignes de plat.
+        """
+        # candidates: (height, laitage_row_offset, dessert_row_offset)
+        candidates = [
+            (6, 4, 5),
+            (5, 3, 4),
+        ]
         best_h = 6
         best_score = -1
         for h, off_lait, off_des in candidates:
@@ -639,6 +619,9 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
             if dessert_row > ws.max_row:
                 continue
             score = _row_score(laitage_row, _DAIRY_KW) + _row_score(dessert_row, _DESSERT_KW)
+            # bonus si la ligne dessert ressemble vraiment à un dessert dans au moins 1 colonne
+            if _row_score(dessert_row, _DESSERT_KW) > 0:
+                score += 2
             if score > best_score:
                 best_score = score
                 best_h = h
@@ -656,12 +639,11 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
             dessert_row = start_row + 5
 
         for c, regime in regime_by_col.items():
-            entree = merged_value_strict(entree_row, c)
-            plat_parts = [merged_value_strict(rr, c) for rr in plat_rows]
+            entree = clean_text(ws.cell(entree_row, c).value)
+            plat_parts = [clean_text(ws.cell(rr, c).value) for rr in plat_rows]
             plat_parts = [p for p in plat_parts if p]
-
-            laitage = merged_value_any(laitage_row, c)
-            dessert = merged_value_any(dessert_row, c)
+            laitage = clean_text(ws.cell(laitage_row, c).value)
+            dessert = clean_text(ws.cell(dessert_row, c).value)
 
             if entree:
                 items.append(MenuItem(date_val, repas, "Entrée", regime, entree))
@@ -672,8 +654,7 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
             if dessert:
                 items.append(MenuItem(date_val, repas, "Dessert", regime, dessert))
 
-    # ================= SCAN DATES =================
-
+    # --- Scan dates in column A ---
     date_rows: List[tuple[int, dt.date]] = []
     anchor_year: Optional[int] = None
     for r in range(4, ws.max_row + 1):
@@ -683,6 +664,7 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
             anchor_year = d.year
             date_rows.append((r, d))
 
+    # Remove duplicates while keeping order (in case the sheet repeats the same date)
     seen = set()
     uniq: List[tuple[int, dt.date]] = []
     for rr, dd in date_rows:
@@ -696,6 +678,7 @@ def parse_menu(path: str, sheet_name: str = "Feuil2") -> List[MenuItem]:
         read_block(rr, dd, "Déjeuner", h_dej)
 
         rr_din = rr + h_dej
+        # si le dîner dépasse la feuille, on ignore
         if rr_din <= ws.max_row:
             h_din = detect_block_height(rr_din)
             read_block(rr_din, dd, "Dîner", h_din)
@@ -724,178 +707,17 @@ def clean_text_delivery(x) -> str:
 def parse_menu_delivery(path: str, sheet_name: str = "Feuil2") -> Dict[tuple, List[str]]:
     """Parse menu for delivery notes.
 
-<<<<<<< HEAD
-    Output: dict[(date, repas, regime)] -> 5 bullet lines:
-      (Entrée, Plat (ligne 1), Plat (ligne 2), Laitage, Dessert)
-
-    Important:
-    - Sur les fichiers "Menus du .. au ..", chaque repas est généralement sur 5 lignes :
-        row0 -> Entrée
-        row1 -> Plat (ligne 1)
-        row2 -> Plat (ligne 2)  (souvent l'accompagnement, parfois vide)
-        row3 -> Laitage
-        row4 -> Dessert
-      Le dîner démarre donc 5 lignes plus bas.
-    - Certains anciens formats utilisent 6 lignes (ligne vide de séparation). On gère un fallback.
-    - If a cell is empty, we use the em dash "—".
-=======
-    This parser is **robust** to the real-world menu layout we receive:
-    - dates in column A (Excel date / datetime),
-    - regime headers possibly merged and split across 2 lines,
-    - one day spanning multiple rows (not a fixed 6-row block).
-
     Output: dict[(date, repas, regime)] -> 5 bullet lines
-    (Entrée, Plat, Garniture, Laitage/Fromage, Dessert)
+    (Entrée, Plat 1, Plat 2, Laitage, Dessert)
 
     Notes:
-    - We keep asterisks (e.g. *Lasagne*) for printing on BL.
-    - Repas keys are "Déjeuner" and "Dîner" (accented) to match PDF rendering.
->>>>>>> 85cd2773bed7854465d9c73b3641b469aae23fd7
+    - Le fichier menu varie: certains jours font 5 lignes/repas (Entrée, Plat1, Plat2, Laitage, Dessert)
+      et d'autres 6 lignes/repas (Entrée, Plat1, Plat2a, Plat2b, Laitage, Dessert).
+    - On gère les cellules fusionnées (sinon laitage/dessert peuvent sembler "absents" sur certains régimes).
+    - On applique une lecture "strict" sur Entrée/Plats (évite que STANDARD bave sur les autres régimes si fusion horizontale)
+      et une lecture "non-strict" sur Laitage/Dessert (permet de récupérer une valeur fusionnée même si la cellule du régime est vide).
+    - Si une case est vide, on garde "—" pour conserver 5 puces fixes.
     """
-    from src.allergens import menu_reader as mr  # local import to avoid hard deps/cycles
-
-    wb = openpyxl.load_workbook(path, data_only=True)
-    if sheet_name not in wb.sheetnames:
-        raise ValueError(f"Feuille '{sheet_name}' introuvable. Feuilles dispo: {wb.sheetnames}")
-    ws = wb[sheet_name]
-
-    # --- detect regime columns using the same robust logic as allergens menu parser
-    header_row, cols = mr._find_header_row_and_cols(ws)
-
-    # In some menu files, many dish cells are horizontally merged across multiple
-    # regime columns. The generic _merged_value() helper then returns the top-left
-    # value for *all* columns, causing STANDARD dishes to "leak" into VEGETARIEN /
-    # VEGETALIEN / HYPO...
-    #
-    # For delivery-note parsing, we therefore use a *strict* merged-cell reader:
-    # if the current cell is empty and belongs to a merged range, we only return
-    # the merged value when the merge actually starts in the current column.
-    def merged_value_strict(row: int, col: int):
-        cell = ws.cell(row=row, column=col)
-        if cell.value not in (None, ""):
-            return cell.value
-        # if merged: only return value if merge starts in this column
-        for merged in ws.merged_cells.ranges:
-            if merged.min_row <= row <= merged.max_row and merged.min_col <= col <= merged.max_col:
-                if merged.min_col != col:
-                    return None
-                return ws.cell(row=merged.min_row, column=merged.min_col).value
-        return None
-
-    # Filter out title/band lines that sometimes get captured as dishes.
-    NOISE_RE = re.compile(r"\bmenus?\s+du\s+\d{1,2}\s+\w+\s+au\s+\d{1,2}\s+\w+\s+\d{4}\b", re.IGNORECASE)
-
-    def keep_line(s: str) -> bool:
-        if not s:
-            return False
-        t = s.strip()
-        if not t or t in {"-", "—"}:
-            return False
-        if NOISE_RE.search(t):
-            return False
-        return True
-
-    # --- find day start rows (date in col A) ---
-    starts: List[tuple[int, dt.date]] = []
-    for r in range(header_row + 1, ws.max_row + 1):
-        if not mr._is_merged_top_left(ws, r, 1):
-            continue
-        d = mr._parse_day_cell(mr._merged_value(ws, r, 1))
-        if d:
-            starts.append((r, d))
-
-    if not starts:
-        # Fallback to legacy fixed-block parser (older files)
-        # (kept to avoid breaking existing deployments)
-        return _parse_menu_delivery_legacy_fixed_blocks(path, sheet_name=sheet_name)
-
-    out: Dict[tuple, List[str]] = {}
-
-    def build_service_positional(rows: List[str]) -> Dict[str, str]:
-        # Similar to allergens.menu_reader positional build, but keeps '*' in output.
-        res = {"entree": "—", "plat": "—", "garnitures": "—", "fromage": "—", "dessert": "—"}
-        for x in rows:
-            if res["dessert"] == "—" and mr._is_dessert(x):
-                res["dessert"] = x
-            elif res["fromage"] == "—" and mr._is_dairy(x):
-                res["fromage"] = x
-            elif res["entree"] == "—":
-                res["entree"] = x
-            elif res["plat"] == "—":
-                res["plat"] = x
-            elif res["garnitures"] == "—":
-                res["garnitures"] = x
-        return res
-
-    def row_texts(r: int) -> List[str]:
-        texts = []
-        for c in cols.values():
-            v = clean_text_delivery(merged_value_strict(r, c))
-            if keep_line(v):
-                texts.append(v)
-        return texts
-
-    for i, (sr, d) in enumerate(starts):
-        er = starts[i + 1][0] - 1 if i + 1 < len(starts) else ws.max_row
-
-        # --- detect best split Déjeuner / Dîner ---
-        best_split = None
-        best_score = -1
-        for r in range(sr, er):
-            above = row_texts(r)
-            below = row_texts(r + 1)
-            if not above or not below:
-                continue
-            dessert_score = sum(1 for t in above if mr._is_dessert(t))
-            entree_score = sum(1 for t in below if mr._looks_like_entree(t))
-            dairy_score = sum(1 for t in above if mr._is_dairy(t))
-            score = dessert_score * 3 + entree_score * 3 + dairy_score
-            if score > best_score:
-                best_score = score
-                best_split = r
-
-        if best_split is None:
-            best_split = sr + max(0, (er - sr) // 2)
-
-        dej_range = range(sr, best_split + 1)
-        din_range = range(best_split + 1, er + 1)
-
-        for reg, col in cols.items():
-            cells_dej: List[str] = []
-            for r in dej_range:
-                v = clean_text_delivery(merged_value_strict(r, col))
-                if keep_line(v):
-                    cells_dej.append(v)
-
-            cells_din: List[str] = []
-            for r in din_range:
-                v = clean_text_delivery(merged_value_strict(r, col))
-                if keep_line(v):
-                    cells_din.append(v)
-
-            dej = build_service_positional(cells_dej)
-            din = build_service_positional(cells_din)
-
-            out[(d, "Déjeuner", reg)] = [
-                dej["entree"],
-                dej["plat"],
-                dej["garnitures"],
-                dej["fromage"],
-                dej["dessert"],
-            ]
-            out[(d, "Dîner", reg)] = [
-                din["entree"],
-                din["plat"],
-                din["garnitures"],
-                din["fromage"],
-                din["dessert"],
-            ]
-
-    return out
-
-
-def _parse_menu_delivery_legacy_fixed_blocks(path: str, sheet_name: str = "Feuil2") -> Dict[tuple, List[str]]:
-    """Legacy parser kept for backward compatibility (older 6-row blocks layout)."""
     wb = openpyxl.load_workbook(path, data_only=True)
     if sheet_name not in wb.sheetnames:
         raise ValueError(f"Feuille '{sheet_name}' introuvable. Feuilles dispo: {wb.sheetnames}")
@@ -920,23 +742,91 @@ def _parse_menu_delivery_legacy_fixed_blocks(path: str, sheet_name: str = "Feuil
 
     out: Dict[tuple, List[str]] = {}
 
-    def read_block(start_row: int, date_val: dt.date, repas: str):
+    def _merged_value_any(row: int, col: int) -> str:
+        cell = ws.cell(row, col)
+        if cell.value not in (None, ""):
+            return clean_text_delivery(cell.value)
+        for rng in ws.merged_cells.ranges:
+            if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
+                v = ws.cell(rng.min_row, rng.min_col).value
+                return clean_text_delivery(v)
+        return ""
+
+    def _merged_value_strict(row: int, col: int) -> str:
+        cell = ws.cell(row, col)
+        if cell.value not in (None, ""):
+            return clean_text_delivery(cell.value)
+        for rng in ws.merged_cells.ranges:
+            if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
+                if rng.min_col != col:
+                    return ""
+                v = ws.cell(rng.min_row, rng.min_col).value
+                return clean_text_delivery(v)
+        return ""
+
+    # Détection 5 vs 6 lignes/repas (heuristique simple basée sur la présence d'un dessert/laitage)
+    _DESSERT_KW = ("compote", "fruit", "gateau", "tarte", "flan", "creme", "crème", "mousse", "riz au lait", "ile flottante")
+    _DAIRY_KW = ("fromage", "yaourt", "yogourt", "fromage blanc", "petit suisse", "camembert", "emmental", "kiri", "tartare", "babybel", "gouda", "boursin")
+
+    def _norm_kw(s: str) -> str:
+        s = clean_text_delivery(s).lower()
+        s = "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
+        return s
+
+    def _row_score(row: int, kws: tuple[str, ...]) -> int:
+        score = 0
+        for c in regime_by_col.keys():
+            v = _merged_value_any(row, c)
+            if not v:
+                continue
+            t = _norm_kw(v)
+            if any(k in t for k in kws):
+                score += 1
+        return score
+
+    def detect_block_height(start_row: int) -> int:
+        candidates = [(6, 4, 5), (5, 3, 4)]
+        best_h = 6
+        best_score = -1
+        for h, off_lait, off_des in candidates:
+            laitage_row = start_row + off_lait
+            dessert_row = start_row + off_des
+            if dessert_row > ws.max_row:
+                continue
+            score = _row_score(laitage_row, _DAIRY_KW) + _row_score(dessert_row, _DESSERT_KW)
+            if score > best_score:
+                best_score = score
+                best_h = h
+        return best_h
+
+    def read_block(start_row: int, date_val: dt.date, repas: str, block_height: int):
+        # mapping vers 5 lignes (Entrée, Plat1, Plat2, Laitage, Dessert)
+        if block_height == 5:
+            entree_row = start_row + 0
+            plat1_row = start_row + 1
+            plat2_rows = [start_row + 2]
+            laitage_row = start_row + 3
+            dessert_row = start_row + 4
+        else:
+            entree_row = start_row + 0
+            plat1_row = start_row + 1
+            plat2_rows = [start_row + 2, start_row + 3]
+            laitage_row = start_row + 4
+            dessert_row = start_row + 5
+
         for c, regime in regime_by_col.items():
-            entree = clean_text_delivery(ws.cell(start_row + 0, c).value)
-            plat1 = clean_text_delivery(ws.cell(start_row + 1, c).value)
-            plat2 = clean_text_delivery(ws.cell(start_row + 2, c).value)
-            laitage = clean_text_delivery(ws.cell(start_row + 3, c).value)
-            dessert = clean_text_delivery(ws.cell(start_row + 4, c).value)
+            entree = _merged_value_strict(entree_row, c)
+            plat1 = _merged_value_strict(plat1_row, c)
+            plat2_parts = [_merged_value_strict(rr, c) for rr in plat2_rows]
+            plat2_parts = [p for p in plat2_parts if p]
+            plat2 = " / ".join(plat2_parts)
+
+            laitage = _merged_value_any(laitage_row, c)
+            dessert = _merged_value_any(dessert_row, c)
 
             lines = [entree, plat1, plat2, laitage, dessert]
             lines = [ln if ln else "—" for ln in lines]
             out[(date_val, repas, regime)] = lines
-
-    def _row_has_any_value(r: int) -> bool:
-        for c in range(2, ws.max_column + 1):
-            if clean_text_delivery(ws.cell(r, c).value):
-                return True
-        return False
 
     # Scan dates in column A (no fixed step)
     date_rows: List[tuple[int, dt.date]] = []
@@ -957,17 +847,15 @@ def _parse_menu_delivery_legacy_fixed_blocks(path: str, sheet_name: str = "Feuil
         uniq.append((rr, dd))
 
     for rr, dd in uniq:
-        # Déjeuner
-        read_block(rr, dd, "Déjeuner")
+        h_dej = detect_block_height(rr)
+        read_block(rr, dd, "Déjeuner", h_dej)
 
-        # Dîner: la plupart du temps rr+5, sinon fallback rr+6 (ancien format avec ligne vide)
-        dinner_row = rr + 5
-        if dinner_row <= ws.max_row and (not _row_has_any_value(dinner_row)) and (dinner_row + 1 <= ws.max_row) and _row_has_any_value(dinner_row + 1):
-            dinner_row = rr + 6
-        read_block(dinner_row, dd, "Dîner")
+        rr_din = rr + h_dej
+        if rr_din <= ws.max_row:
+            h_din = detect_block_height(rr_din)
+            read_block(rr_din, dd, "Dîner", h_din)
 
     return out
-
 
 
 def _norm(s: str) -> str:
@@ -1204,7 +1092,14 @@ def export_bons_livraison_pdf(
         return y
 
 
-    def draw_page(site: str, date_val: dt.date):
+    def draw_page(site_key: str, date_val: dt.date):
+        """Dessine une page de BL.
+
+        Important:
+        - On utilise *site_key* (libellé tel qu'il apparaît dans le planning) pour tous les calculs/filtrages.
+        - On affiche un libellé "joli" via display_site_name().
+        """
+        site_display = display_site_name(site_key)
         # Header
         c.setFont("Helvetica-Bold", 15)
         c.drawString(x0, y_top, "BON DE LIVRAISON")
@@ -1213,7 +1108,7 @@ def export_bons_livraison_pdf(
         c.setFont("Helvetica-Bold", 9)
         c.drawString(x0, y, "Site : ")
         c.setFont("Helvetica", 9)
-        c.drawString(x0 + 27.5, y, site)
+        c.drawString(x0 + 27.5, y, site_display)
 
         # Zone utilisable (évite que ça déborde en bas)
         y_min = 60  # réserve pour les signatures
@@ -1226,7 +1121,7 @@ def export_bons_livraison_pdf(
             c.setFont("Helvetica-Bold", 9)
             c.drawString(x0, yy, "Site : ")
             c.setFont("Helvetica", 9)
-            c.drawString(x0 + 27.5, yy, site)
+            c.drawString(x0 + 27.5, yy, site_display)
             yy -= 12
             c.setFont("Helvetica-Bold", 9)
             c.drawString(x0, yy, "Date : ")
@@ -1247,7 +1142,7 @@ def export_bons_livraison_pdf(
         c.setFont("Helvetica", 9)
         c.drawString(x0 + 27.5, y, fmt_date_fr(date_val))
 
-        tournee = "Barquette" if _norm(site) == _norm("MAS") else "Camion"
+        tournee = "Barquette" if _norm(site_key) == _norm("MAS") else "Camion"
         y -= line_h
         c.setFont("Helvetica-Bold", 9)
         c.drawString(x0, y, "Tournée : ")
@@ -1259,9 +1154,9 @@ def export_bons_livraison_pdf(
         tot_dej = 0
         tot_din = 0
         if df_dej is not None and not df_dej.empty:
-            tot_dej = int(pd.to_numeric(df_dej[df_dej["Site"] == site][col], errors="coerce").fillna(0).sum())
+            tot_dej = int(pd.to_numeric(df_dej[df_dej["Site"] == site_key][col], errors="coerce").fillna(0).sum())
         if df_din is not None and not df_din.empty:
-            tot_din = int(pd.to_numeric(df_din[df_din["Site"] == site][col], errors="coerce").fillna(0).sum())
+            tot_din = int(pd.to_numeric(df_din[df_din["Site"] == site_key][col], errors="coerce").fillna(0).sum())
 
         # Mixé/Lissé (feuille dédiée) — si disponible
         mix_dej = lisse_dej = mix_din = lisse_din = 0
@@ -1270,13 +1165,13 @@ def export_bons_livraison_pdf(
                 mdej = mix_planning.get("dejeuner")
                 mdin = mix_planning.get("diner")
                 if mdej is not None and not mdej.empty:
-                    sub = mdej[mdej["Site"].astype(str).str.strip().str.lower() == str(site).strip().lower()]
+                    sub = mdej[mdej["Site"].astype(str).str.strip().str.lower() == str(site_key).strip().lower()]
                     if not sub.empty:
                         v_l = sub[sub["Regime"].astype(str).str.lower().str.contains("liss")][col].sum()
                         v_m = sub[sub["Regime"].astype(str).str.lower().str.contains("mix")][col].sum()
                         lisse_dej = int(_to_number(v_l)); mix_dej = int(_to_number(v_m))
                 if mdin is not None and not mdin.empty:
-                    sub = mdin[mdin["Site"].astype(str).str.strip().str.lower() == str(site).strip().lower()]
+                    sub = mdin[mdin["Site"].astype(str).str.strip().str.lower() == str(site_key).strip().lower()]
                     if not sub.empty:
                         v_l = sub[sub["Regime"].astype(str).str.lower().str.contains("liss")][col].sum()
                         v_m = sub[sub["Regime"].astype(str).str.lower().str.contains("mix")][col].sum()
@@ -1302,11 +1197,11 @@ def export_bons_livraison_pdf(
         mix_dej = 0
         mix_din = 0
         if df_dej is not None and not df_dej.empty:
-            subm = df_dej[(df_dej["Site"] == site) & (df_dej["Regime"].astype(str).apply(is_mixe_lisse))]
+            subm = df_dej[(df_dej["Site"] == site_key) & (df_dej["Regime"].astype(str).apply(is_mixe_lisse))]
             if not subm.empty:
                 mix_dej = int(pd.to_numeric(subm[col], errors="coerce").fillna(0).sum())
         if df_din is not None and not df_din.empty:
-            subm = df_din[(df_din["Site"] == site) & (df_din["Regime"].astype(str).apply(is_mixe_lisse))]
+            subm = df_din[(df_din["Site"] == site_key) & (df_din["Regime"].astype(str).apply(is_mixe_lisse))]
             if not subm.empty:
                 mix_din = int(pd.to_numeric(subm[col], errors="coerce").fillna(0).sum())
 
@@ -1333,14 +1228,14 @@ def export_bons_livraison_pdf(
         # Body
         y = box_top - box_h - 10
 
-        regs = regimes_for_site(date_val, site)
+        regs = regimes_for_site(date_val, site_key)
         for reg in regs:
-            dej_n = count_for(df_dej, site, reg, date_val)
-            din_n = count_for(df_din, site, reg, date_val)
+            dej_n = count_for(df_dej, site_key, reg, date_val)
+            din_n = count_for(df_din, site_key, reg, date_val)
             if dej_n <= 0 and din_n <= 0:
                 continue
 
-            y -= 14
+            y -= 12
             c.setFont("Helvetica-Bold", 9)
             c.drawString(x0, y, f"{reg} —  Déj {dej_n} / Dîn {din_n}")
 
@@ -1370,10 +1265,13 @@ def export_bons_livraison_pdf(
                             best_score = score
                             best = lns
                     lines = best
-                lines = lines or ["Menu non détaillé (mixé/lissé)"]
+                # Ne pas imprimer les lignes vides/placeholder (ça fait déborder sur 2 pages)
+                lines = [ln for ln in (lines or []) if clean_text_delivery(ln) and clean_text_delivery(ln) != "—"]
+                if not lines:
+                    lines = ["—"]
                 for ln in lines:
                     ensure_space(14)
-                    y = _draw_bullet(x0 + 30, y, ln, max_width, font_size=9, leading=11)
+                    y = _draw_bullet(x0 + 30, y, ln, max_width, font_size=9, leading=10)
 
             # Dîner
             y -= 6
@@ -1398,10 +1296,12 @@ def export_bons_livraison_pdf(
                             best_score = score
                             best = lns
                     lines = best
-                lines = lines or ["Menu non détaillé (mixé/lissé)"]
+                lines = [ln for ln in (lines or []) if clean_text_delivery(ln) and clean_text_delivery(ln) != "—"]
+                if not lines:
+                    lines = ["—"]
                 for ln in lines:
                     ensure_space(14)
-                    y = _draw_bullet(x0 + 30, y, ln, max_width, font_size=9, leading=11)
+                    y = _draw_bullet(x0 + 30, y, ln, max_width, font_size=9, leading=10)
 
             # Space between regimes
             y -= 6
@@ -1421,7 +1321,8 @@ def export_bons_livraison_pdf(
             # Ne pas sortir de BL si aucune consommation ce jour-là
             if (tot_dej + tot_din) <= 0:
                 continue
-            draw_page(display_site_name(site), d)
+            # On garde le site du planning comme clé de calcul, et on affiche un libellé propre dans draw_page.
+            draw_page(site, d)
             c.showPage()
 
     c.save()
