@@ -707,19 +707,129 @@ def clean_text_delivery(x) -> str:
 def parse_menu_delivery(path: str, sheet_name: str = "Feuil2") -> Dict[tuple, List[str]]:
     """Parse menu for delivery notes.
 
+    This parser is **robust** to the real-world menu layout we receive:
+    - dates in column A (Excel date / datetime),
+    - regime headers possibly merged and split across 2 lines,
+    - one day spanning multiple rows (not a fixed 6-row block).
+
     Output: dict[(date, repas, regime)] -> 5 bullet lines
-    (Entrée, Plat 1, Plat 2, Laitage, Dessert)
+    (Entrée, Plat, Garniture, Laitage/Fromage, Dessert)
 
     Notes:
-    - Excel layout is the same as parse_menu(): 6 rows per meal block.
-    - We map:
-        row0 -> Entrée
-        row1 -> Plat 1
-        row2 + row3 -> Plat 2 (joined with " / " if both present)
-        row4 -> Laitage
-        row5 -> Dessert
-    - If a cell is empty, we use the em dash "—".
+    - We keep asterisks (e.g. *Lasagne*) for printing on BL.
+    - Repas keys are "Déjeuner" and "Dîner" (accented) to match PDF rendering.
     """
+    from src.allergens import menu_reader as mr  # local import to avoid hard deps/cycles
+
+    wb = openpyxl.load_workbook(path, data_only=True)
+    if sheet_name not in wb.sheetnames:
+        raise ValueError(f"Feuille '{sheet_name}' introuvable. Feuilles dispo: {wb.sheetnames}")
+    ws = wb[sheet_name]
+
+    # --- detect regime columns using the same robust logic as allergens menu parser
+    header_row, cols = mr._find_header_row_and_cols(ws)
+
+    # --- find day start rows (date in col A) ---
+    starts: List[tuple[int, dt.date]] = []
+    for r in range(header_row + 1, ws.max_row + 1):
+        if not mr._is_merged_top_left(ws, r, 1):
+            continue
+        d = mr._parse_day_cell(mr._merged_value(ws, r, 1))
+        if d:
+            starts.append((r, d))
+
+    if not starts:
+        # Fallback to legacy fixed-block parser (older files)
+        # (kept to avoid breaking existing deployments)
+        return _parse_menu_delivery_legacy_fixed_blocks(path, sheet_name=sheet_name)
+
+    out: Dict[tuple, List[str]] = {}
+
+    def build_service_positional(rows: List[str]) -> Dict[str, str]:
+        # Similar to allergens.menu_reader positional build, but keeps '*' in output.
+        res = {"entree": "—", "plat": "—", "garnitures": "—", "fromage": "—", "dessert": "—"}
+        for x in rows:
+            if res["dessert"] == "—" and mr._is_dessert(x):
+                res["dessert"] = x
+            elif res["fromage"] == "—" and mr._is_dairy(x):
+                res["fromage"] = x
+            elif res["entree"] == "—":
+                res["entree"] = x
+            elif res["plat"] == "—":
+                res["plat"] = x
+            elif res["garnitures"] == "—":
+                res["garnitures"] = x
+        return res
+
+    def row_texts(r: int) -> List[str]:
+        texts = []
+        for c in cols.values():
+            v = clean_text_delivery(mr._merged_value(ws, r, c))
+            if v:
+                texts.append(v)
+        return texts
+
+    for i, (sr, d) in enumerate(starts):
+        er = starts[i + 1][0] - 1 if i + 1 < len(starts) else ws.max_row
+
+        # --- detect best split Déjeuner / Dîner ---
+        best_split = None
+        best_score = -1
+        for r in range(sr, er):
+            above = row_texts(r)
+            below = row_texts(r + 1)
+            if not above or not below:
+                continue
+            dessert_score = sum(1 for t in above if mr._is_dessert(t))
+            entree_score = sum(1 for t in below if mr._looks_like_entree(t))
+            dairy_score = sum(1 for t in above if mr._is_dairy(t))
+            score = dessert_score * 3 + entree_score * 3 + dairy_score
+            if score > best_score:
+                best_score = score
+                best_split = r
+
+        if best_split is None:
+            best_split = sr + max(0, (er - sr) // 2)
+
+        dej_range = range(sr, best_split + 1)
+        din_range = range(best_split + 1, er + 1)
+
+        for reg, col in cols.items():
+            cells_dej: List[str] = []
+            for r in dej_range:
+                v = clean_text_delivery(mr._merged_value(ws, r, col))
+                if v:
+                    cells_dej.append(v)
+
+            cells_din: List[str] = []
+            for r in din_range:
+                v = clean_text_delivery(mr._merged_value(ws, r, col))
+                if v:
+                    cells_din.append(v)
+
+            dej = build_service_positional(cells_dej)
+            din = build_service_positional(cells_din)
+
+            out[(d, "Déjeuner", reg)] = [
+                dej["entree"],
+                dej["plat"],
+                dej["garnitures"],
+                dej["fromage"],
+                dej["dessert"],
+            ]
+            out[(d, "Dîner", reg)] = [
+                din["entree"],
+                din["plat"],
+                din["garnitures"],
+                din["fromage"],
+                din["dessert"],
+            ]
+
+    return out
+
+
+def _parse_menu_delivery_legacy_fixed_blocks(path: str, sheet_name: str = "Feuil2") -> Dict[tuple, List[str]]:
+    """Legacy parser kept for backward compatibility (older 6-row blocks layout)."""
     wb = openpyxl.load_workbook(path, data_only=True)
     if sheet_name not in wb.sheetnames:
         raise ValueError(f"Feuille '{sheet_name}' introuvable. Feuilles dispo: {wb.sheetnames}")
@@ -782,6 +892,7 @@ def parse_menu_delivery(path: str, sheet_name: str = "Feuil2") -> Dict[tuple, Li
         read_block(rr + 6, dd, "Dîner")
 
     return out
+
 
 
 def _norm(s: str) -> str:
