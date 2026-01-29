@@ -707,17 +707,18 @@ def clean_text_delivery(x) -> str:
 def parse_menu_delivery(path: str, sheet_name: str = "Feuil2") -> Dict[tuple, List[str]]:
     """Parse menu for delivery notes.
 
-    Output: dict[(date, repas, regime)] -> 5 bullet lines
-    (Entrée, Plat 1, Plat 2, Laitage, Dessert)
+    Output: dict[(date, repas, regime)] -> 5 bullet lines:
+      (Entrée, Plat (ligne 1), Plat (ligne 2), Laitage, Dessert)
 
-    Notes:
-    - Excel layout is the same as parse_menu(): 6 rows per meal block.
-    - We map:
+    Important:
+    - Sur les fichiers "Menus du .. au ..", chaque repas est généralement sur 5 lignes :
         row0 -> Entrée
-        row1 -> Plat 1
-        row2 + row3 -> Plat 2 (joined with " / " if both present)
-        row4 -> Laitage
-        row5 -> Dessert
+        row1 -> Plat (ligne 1)
+        row2 -> Plat (ligne 2)  (souvent l'accompagnement, parfois vide)
+        row3 -> Laitage
+        row4 -> Dessert
+      Le dîner démarre donc 5 lignes plus bas.
+    - Certains anciens formats utilisent 6 lignes (ligne vide de séparation). On gère un fallback.
     - If a cell is empty, we use the em dash "—".
     """
     wb = openpyxl.load_workbook(path, data_only=True)
@@ -748,16 +749,19 @@ def parse_menu_delivery(path: str, sheet_name: str = "Feuil2") -> Dict[tuple, Li
         for c, regime in regime_by_col.items():
             entree = clean_text_delivery(ws.cell(start_row + 0, c).value)
             plat1 = clean_text_delivery(ws.cell(start_row + 1, c).value)
-            plat2a = clean_text_delivery(ws.cell(start_row + 2, c).value)
-            plat2b = clean_text_delivery(ws.cell(start_row + 3, c).value)
-            plat2_parts = [p for p in [plat2a, plat2b] if p]
-            plat2 = " / ".join(plat2_parts)
-            laitage = clean_text_delivery(ws.cell(start_row + 4, c).value)
-            dessert = clean_text_delivery(ws.cell(start_row + 5, c).value)
+            plat2 = clean_text_delivery(ws.cell(start_row + 2, c).value)
+            laitage = clean_text_delivery(ws.cell(start_row + 3, c).value)
+            dessert = clean_text_delivery(ws.cell(start_row + 4, c).value)
 
             lines = [entree, plat1, plat2, laitage, dessert]
             lines = [ln if ln else "—" for ln in lines]
             out[(date_val, repas, regime)] = lines
+
+    def _row_has_any_value(r: int) -> bool:
+        for c in range(2, ws.max_column + 1):
+            if clean_text_delivery(ws.cell(r, c).value):
+                return True
+        return False
 
     # Scan dates in column A (no fixed step)
     date_rows: List[tuple[int, dt.date]] = []
@@ -778,8 +782,14 @@ def parse_menu_delivery(path: str, sheet_name: str = "Feuil2") -> Dict[tuple, Li
         uniq.append((rr, dd))
 
     for rr, dd in uniq:
+        # Déjeuner
         read_block(rr, dd, "Déjeuner")
-        read_block(rr + 6, dd, "Dîner")
+
+        # Dîner: la plupart du temps rr+5, sinon fallback rr+6 (ancien format avec ligne vide)
+        dinner_row = rr + 5
+        if dinner_row <= ws.max_row and (not _row_has_any_value(dinner_row)) and (dinner_row + 1 <= ws.max_row) and _row_has_any_value(dinner_row + 1):
+            dinner_row = rr + 6
+        read_block(dinner_row, dd, "Dîner")
 
     return out
 
