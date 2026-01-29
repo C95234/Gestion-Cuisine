@@ -238,10 +238,8 @@ def load_records() -> pd.DataFrame:
 # -----------------------------
 
 DEFAULT_UNIT_PRICES = {
-    # Tarifs 2026 (standard / mixé-lissé)
-    # NB: on conserve la possibilité d'override par site via custom_prices.
-    "repas": {"__default__": 6.60, "MAS": 6.65},
-    "mixe_lisse": {"__default__": 7.85, "MAS": 7.74},
+    "repas": {"__default__": 6.50, "MAS": 6.65},
+    "mixe_lisse": {"__default__": 7.61, "MAS": 7.74},
 }
 
 def _unit_price(category: str, site: str, custom_prices: Optional[dict] = None) -> float:
@@ -326,90 +324,8 @@ def export_monthly_workbook(
         # Freeze panes at first day row (keeps headers + day column visible)
         ws.freeze_panes = "B4"
 
-    # --- Récapitulatif annuel (en fin de classeur) ---
-    _write_year_recap_sheet(
-        wb,
-        export_year,
-        year_records,
-        custom_prices=custom_prices,
-    )
-
     wb.save(out_path)
     return out_path
-
-
-def _write_year_recap_sheet(
-    wb: openpyxl.Workbook,
-    year: int,
-    year_records: pd.DataFrame,
-    *,
-    custom_prices: Optional[dict] = None,
-) -> None:
-    """Ajoute une feuille de récapitulatif annuel en fin de classeur."""
-    ws = wb.create_sheet(f"RECAP {year}")
-
-    # Compute totals (annual)
-    df = year_records.copy() if year_records is not None else pd.DataFrame()
-    if not df.empty:
-        df["qty"] = pd.to_numeric(df.get("qty"), errors="coerce").fillna(0).astype(int)
-        df["category"] = df.get("category").astype(str)
-    total_repas = int(df.loc[df["category"] == "repas", "qty"].sum()) if not df.empty else 0
-    total_ml = int(df.loc[df["category"] == "mixe_lisse", "qty"].sum()) if not df.empty else 0
-
-    prix_repas = float(_unit_price("repas", "", custom_prices))
-    prix_ml = float(_unit_price("mixe_lisse", "", custom_prices))
-
-    montant_repas = total_repas * prix_repas
-    montant_ml = total_ml * prix_ml
-    montant_total = montant_repas + montant_ml
-
-    # Layout
-    ws["A1"] = f"RÉCAPITULATIF FACTURATION {year}"
-    ws.merge_cells("A1:D1")
-    ws["A1"].font = Font(bold=True, size=14)
-    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
-
-    headers = ["Catégorie", "Effectifs", "Prix unitaire (€)", "Montant (€)"]
-    ws.append(headers)
-    for col in range(1, 5):
-        _style_header_cell(ws.cell(2, col))
-
-    rows = [
-        ["Repas standard", total_repas, prix_repas, montant_repas],
-        ["Mixé / lissé", total_ml, prix_ml, montant_ml],
-    ]
-    for r in rows:
-        ws.append(r)
-
-    # Total row
-    ws.append(["TOTAL", "", "", montant_total])
-
-    # Style body
-    for row_idx in range(3, 5):
-        for col_idx in range(1, 5):
-            cell = ws.cell(row_idx, col_idx)
-            _style_cell(cell)
-
-    # Number formats
-    ws["B3"].number_format = "0"
-    ws["B4"].number_format = "0"
-    ws["C3"].number_format = "0.00"
-    ws["C4"].number_format = "0.00"
-    ws["D3"].number_format = "0.00"
-    ws["D4"].number_format = "0.00"
-
-    # Total styling
-    for col_idx in range(1, 5):
-        _style_header_cell(ws.cell(5, col_idx))
-    ws["A5"].value = "TOTAL"
-    ws["D5"].number_format = "0.00"
-
-    # Column widths
-    ws.column_dimensions["A"].width = 22
-    ws.column_dimensions["B"].width = 12
-    ws.column_dimensions["C"].width = 16
-    ws.column_dimensions["D"].width = 16
-    ws.freeze_panes = "A3"
 
 
 def _style_header_cell(cell):
