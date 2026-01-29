@@ -1,118 +1,15 @@
 from __future__ import annotations
 
-from typing import List, Optional, Dict
-
-import pandas as pd
-import openpyxl
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import Font, Alignment, PatternFill, Border, Side, numbers
-
-
-def _write_recap_sheet(
-    wb: openpyxl.Workbook,
-    records: pd.DataFrame,
-    sites: List[str],
-    year: int,
-    *,
-    custom_prices: Optional[dict] = None,
-) -> None:
-    """Add a recap sheet with monthly billed totals per site (standard + mixé/lissé)."""
-    ws = wb.create_sheet(f"RECAP {year}")
-
-    n_sites = len(sites)
-    total_col = n_sites + 2  # A + sites + TOTAL
-
-    # Title
-    ws.cell(1, 1, f"Récapitulatif facturation {year}")
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_col)
-    _style_header_cell(ws.cell(1, 1))
-    ws.row_dimensions[1].height = 22
-
-    months = [
-        "Janvier","Février","Mars","Avril","Mai","Juin",
-        "Juillet","Août","Septembre","Octobre","Novembre","Décembre"
-    ]
-
-    def _block(start_row: int, label: str, category: str) -> int:
-        # Block title
-        ws.cell(start_row, 1, label)
-        ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=total_col)
-        _style_header_cell(ws.cell(start_row, 1))
-
-        # Header row
-        ws.cell(start_row+1, 1, "Mois")
-        _style_header_cell(ws.cell(start_row+1, 1))
-        for i, site in enumerate(sites, start=2):
-            c = ws.cell(start_row+1, i, site)
-            _style_header_cell(c)
-        ctot = ws.cell(start_row+1, total_col, "TOTAL")
-        _style_header_cell(ctot)
-
-        # Data rows
-        r = start_row + 2
-        annual_total = 0.0
-        for m in range(1, 13):
-            ws.cell(r, 1, months[m-1])
-            _style_cell(ws.cell(r, 1))
-            row_total = 0.0
-            for i, site in enumerate(sites, start=2):
-                qty = records[
-                    (records["year"] == year)
-                    & (records["month"] == m)
-                    & (records["category"] == category)
-                    & (records["site"] == site)
-                ]["qty"].sum()
-                amount = float(qty) * _unit_price(category, site, custom_prices)
-                row_total += amount
-                cell = ws.cell(r, i, amount)
-                _style_cell(cell)
-                cell.number_format = '#,##0.00" €"'
-            annual_total += row_total
-            cell_total = ws.cell(r, total_col, row_total)
-            _style_cell(cell_total)
-            cell_total.number_format = '#,##0.00" €"'
-            r += 1
-
-        # Annual total row
-        ws.cell(r, 1, "TOTAL ANNUEL")
-        _style_header_cell(ws.cell(r, 1))
-        grand = 0.0
-        for i, site in enumerate(sites, start=2):
-            qty = records[
-                (records["year"] == year)
-                & (records["category"] == category)
-                & (records["site"] == site)
-            ]["qty"].sum()
-            amount = float(qty) * _unit_price(category, site, custom_prices)
-            grand += amount
-            cell = ws.cell(r, i, amount)
-            _style_header_cell(cell)
-            cell.number_format = '#,##0.00" €"'
-        cell_total = ws.cell(r, total_col, grand)
-        _style_header_cell(cell_total)
-        cell_total.number_format = '#,##0.00" €"'
-        return r + 2
-
-    next_row = _block(3, "FACTURATION — REPAS STANDARD", "repas")
-    _block(next_row, "FACTURATION — MIXÉ/LISSÉ", "mixe_lisse")
-
-    # Column widths
-    ws.column_dimensions["A"].width = 16
-    for i in range(2, total_col+1):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = 18
-
-    ws.freeze_panes = "B5"
-_ import annotations
-
+import datetime as dt
 import json
 import re
-import datetime as dt
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 import openpyxl
-from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 
 
 # -----------------------------
@@ -121,7 +18,7 @@ from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
 def _data_dir() -> Path:
     """Local persistent folder (next to the app) to store weekly saved plannings."""
-    base = Path(__file__).resolve().parent.parent  # GenerateurBonCommande/
+    base = Path(__file__).resolve().parent.parent
     d = base / "data" / "facturation"
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -162,13 +59,10 @@ def norm_site_facturation(site: str) -> str:
     s0 = str(site or "").strip()
     sN = _norm(s0)
 
-    # Exact / near-exact matches
     if re.fullmatch(r"24\s*(ter|simple)", sN):
         return "Internat"
     if sN in {"24ter", "24simple"}:
         return "Internat"
-
-    # Tolerate variants containing the tokens (with or without extra words)
     if "24" in sN and ("ter" in sN or "simple" in sN):
         return "Internat"
 
@@ -185,6 +79,10 @@ def is_mixe_lisse_regime(regime: str) -> bool:
     return ("mixe" in r) or ("mixé" in r) or ("lisse" in r) or ("m/l" in r) or ("ml" == r)
 
 
+# -----------------------------
+# Planning conversion
+# -----------------------------
+
 def planning_to_daily_totals(
     dej: pd.DataFrame,
     din: pd.DataFrame,
@@ -195,7 +93,6 @@ def planning_to_daily_totals(
 ) -> pd.DataFrame:
     """
     Convert planning fabrication (déjeuner + dîner) into day-level totals per site.
-
     Output columns: date, site, qty_repas
     """
     def _one(df: pd.DataFrame) -> pd.DataFrame:
@@ -211,7 +108,6 @@ def planning_to_daily_totals(
     if df.empty:
         return pd.DataFrame(columns=["date", "site", "qty_repas"])
 
-    # Filters
     mask = pd.Series([True] * len(df))
     if exclude_pdj and "Regime" in df.columns:
         mask &= ~df["Regime"].astype(str).map(is_pdj_regime)
@@ -222,7 +118,6 @@ def planning_to_daily_totals(
 
     day_cols = [c for c in ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"] if c in df.columns]
 
-    # Melt
     melted = df.melt(id_vars=["Site"], value_vars=day_cols, var_name="day_name", value_name="qty")
     melted["qty"] = pd.to_numeric(melted["qty"], errors="coerce").fillna(0).astype(int)
 
@@ -242,7 +137,6 @@ def mixe_lisse_to_daily_totals(
 ) -> pd.DataFrame:
     """
     Convert planning mixé/lissé (déjeuner + dîner) into day-level totals per site.
-
     Output columns: date, site, qty_ml
     """
     frames = []
@@ -259,6 +153,7 @@ def mixe_lisse_to_daily_totals(
 
     day_index = {name: i for i, name in enumerate(["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"])}
     melted["date"] = melted["day_name"].map(lambda d: week_monday + dt.timedelta(days=day_index.get(d, 0)))
+
     out = melted.groupby(["date", "Site"], as_index=False)["qty"].sum()
     out = out.rename(columns={"Site": "site", "qty": "qty_ml"})
     return out
@@ -279,7 +174,6 @@ def save_week(
     Append records for a week into storage (idempotent per date+site).
     Returns (n_repas, n_ml) saved rows.
     """
-    # Normalize
     def _norm_df(df: pd.DataFrame, qty_col: str, category: str) -> pd.DataFrame:
         if df is None or df.empty:
             return pd.DataFrame(columns=["date","site","category","qty","week_monday","source"])
@@ -294,7 +188,7 @@ def save_week(
 
     a = _norm_df(repas_daily, "qty_repas", "repas")
     b = _norm_df(ml_daily, "qty_ml", "mixe_lisse")
-    new = pd.concat([a,b], ignore_index=True)
+    new = pd.concat([a, b], ignore_index=True)
 
     p = _records_path()
     if p.exists():
@@ -303,7 +197,6 @@ def save_week(
     else:
         old = pd.DataFrame(columns=["date","site","category","qty","week_monday","source"])
 
-    # Drop existing rows for same date+site+category within the saved week range (7 days)
     week_dates = {week_monday + dt.timedelta(days=i) for i in range(7)}
     mask_keep = ~(
         old["date"].isin(list(week_dates))
@@ -337,13 +230,15 @@ def load_records() -> pd.DataFrame:
 
 
 # -----------------------------
-# Export workbook (monthly)
+# Pricing
 # -----------------------------
 
 DEFAULT_UNIT_PRICES = {
+    # Tarifs 2026
     "repas": {"__default__": 6.60, "MAS": 6.65},
     "mixe_lisse": {"__default__": 7.85, "MAS": 7.74},
 }
+
 
 def _unit_price(category: str, site: str, custom_prices: Optional[dict] = None) -> float:
     prices = (custom_prices or DEFAULT_UNIT_PRICES).get(category, {})
@@ -351,88 +246,9 @@ def _unit_price(category: str, site: str, custom_prices: Optional[dict] = None) 
     return float(prices.get(s, prices.get("__default__", 0.0)))
 
 
-def export_monthly_workbook(
-    records: pd.DataFrame,
-    out_path: str,
-    *,
-    custom_prices: Optional[dict] = None,
-) -> str:
-    """
-    Create an Excel workbook for billing.
-
-    The workbook always contains **12 sheets (Janvier → Décembre)** for a single year.
-    The exported year is the most recent year found in ``records``.
-
-    Each month sheet contains 2 blocks: Repas and Mixé/Lissé.
-    Layout is aligned with your monthly template (unit prices on the first row).
-    """
-    if records is None or records.empty:
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Aucune donnée"
-        ws["A1"] = "Aucune semaine mémorisée pour la facturation."
-        wb.save(out_path)
-        return out_path
-
-    # Ensure dates
-    records = records.copy()
-    records["date"] = pd.to_datetime(records["date"]).dt.date
-    # Normalize site names (facturation): "24 ter" + "24 simple" -> "Internat"
-    if "site" in records.columns:
-        records["site"] = records["site"].map(norm_site_facturation)
-
-    # Months present
-    records["year"] = records["date"].map(lambda d: d.year)
-    records["month"] = records["date"].map(lambda d: d.month)
-
-    # Export a full year (Janvier -> Décembre). We pick the most recent year found in records.
-    export_year = int(records["year"].max())
-
-    # Keep a stable set of sites across the year (so columns don't change month to month)
-    year_records = records[records["year"] == export_year]
-    sites = sorted(year_records["site"].dropna().unique().tolist(), key=lambda s: str(s).upper())
-
-    wb = openpyxl.Workbook()
-    # remove default sheet
-    wb.remove(wb.active)
-
-    for m in range(1, 13):
-        y = export_year
-        # Keep the same naming convention as the UI selector (YYYY-MM)
-        sheet_name = f"{y}-{m:02d}"
-        ws = wb.create_sheet(sheet_name)
-
-        month_start = dt.date(y, m, 1)
-        # month end
-        if m == 12:
-            month_end = dt.date(y+1, 1, 1) - dt.timedelta(days=1)
-        else:
-            month_end = dt.date(y, m+1, 1) - dt.timedelta(days=1)
-
-        # Month slice (sites are kept stable across the year)
-        sub = records[(records["year"] == y) & (records["month"] == m)].copy()
-
-        # Build two blocks
-        r = 1
-        r = _write_month_block(ws, r, "Repas", "repas", sub, sites, month_start, month_end, custom_prices=custom_prices)
-        r += 2
-        _write_month_block(ws, r, "Mixé/Lissé", "mixe_lisse", sub, sites, month_start, month_end, custom_prices=custom_prices)
-
-        # Column widths
-        ws.column_dimensions["A"].width = 10
-        for i, _ in enumerate(sites, start=2):
-            ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = 14
-        ws.column_dimensions[openpyxl.utils.get_column_letter(len(sites)+2)].width = 12
-
-        # Freeze panes at first day row (keeps headers + day column visible)
-        ws.freeze_panes = "B4"
-
-    # Recap sheet (monthly billed totals per site)
-    _write_recap_sheet(wb, records, sites, export_year, custom_prices=custom_prices)
-
-    wb.save(out_path)
-    return out_path
-
+# -----------------------------
+# Excel styling helpers
+# -----------------------------
 
 def _style_header_cell(cell):
     cell.font = Font(bold=True)
@@ -447,6 +263,10 @@ def _style_cell(cell):
     thin = Side(style="thin", color="CCCCCC")
     cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
+
+# -----------------------------
+# Excel export (monthly workbook)
+# -----------------------------
 
 def _write_month_block(
     ws,
@@ -465,18 +285,16 @@ def _write_month_block(
     Block layout:
     Row start: title + unit prices + month_start date in last col
     Row start+1: year + site names + TOTAL
-    Row start+2: (optional label row) left blank except category label in last col
+    Row start+2: label row
     Rows start+3..: day numbers and quantities
     Last row: TOTAL
     """
     n_sites = len(sites)
     total_col = n_sites + 2  # A + sites + TOTAL
 
-    # Row: title and unit prices
     ws.cell(start_row, 1, title)
     _style_header_cell(ws.cell(start_row, 1))
     for i, site in enumerate(sites, start=2):
-        # Unit price per site (keeps the same structure as your existing workbook)
         c = ws.cell(start_row, i, _unit_price(category, site, custom_prices))
         _style_header_cell(c)
         c.number_format = "0.00"
@@ -484,29 +302,26 @@ def _write_month_block(
     _style_header_cell(ws.cell(start_row, total_col))
     ws.cell(start_row, total_col).number_format = "yyyy-mm-dd"
 
-    # Row: year + sites + TOTAL
-    ws.cell(start_row+1, 1, month_start.year)
-    _style_header_cell(ws.cell(start_row+1, 1))
+    ws.cell(start_row + 1, 1, month_start.year)
+    _style_header_cell(ws.cell(start_row + 1, 1))
     for i, site in enumerate(sites, start=2):
-        c = ws.cell(start_row+1, i, site)
+        c = ws.cell(start_row + 1, i, site)
         _style_header_cell(c)
-    ctot = ws.cell(start_row+1, total_col, "TOTAL")
+    ctot = ws.cell(start_row + 1, total_col, "TOTAL")
     _style_header_cell(ctot)
 
-    # Label row
-    ws.cell(start_row+2, 1, "")
+    ws.cell(start_row + 2, 1, "")
     for i in range(2, total_col):
-        _style_header_cell(ws.cell(start_row+2, i))
-    ws.cell(start_row+2, total_col, title.upper())
-    _style_header_cell(ws.cell(start_row+2, total_col))
+        _style_header_cell(ws.cell(start_row + 2, i))
+    ws.cell(start_row + 2, total_col, title.upper())
+    _style_header_cell(ws.cell(start_row + 2, total_col))
 
-    # Data map
     cat = sub[sub["category"] == category].copy()
     cat["date"] = pd.to_datetime(cat["date"]).dt.date
 
-    # Build a pivot day x site
     days = pd.date_range(month_start, month_end, freq="D").date
     pivot = pd.DataFrame(index=days, columns=sites, data=0)
+
     if not cat.empty:
         for _, row in cat.iterrows():
             d = row["date"]
@@ -514,7 +329,6 @@ def _write_month_block(
             if d in pivot.index and s in pivot.columns:
                 pivot.loc[d, s] += int(row["qty"])
 
-    # Write rows for each day
     row = start_row + 3
     for d in days:
         ws.cell(row, 1, d.day)
@@ -529,7 +343,6 @@ def _write_month_block(
         _style_cell(ws.cell(row, total_col))
         row += 1
 
-    # TOTAL row
     ws.cell(row, 1, "TOTAL")
     _style_header_cell(ws.cell(row, 1))
     grand_total = 0
@@ -542,3 +355,167 @@ def _write_month_block(
     _style_header_cell(ws.cell(row, total_col))
 
     return row
+
+
+def _write_recap_sheet(
+    wb: openpyxl.Workbook,
+    records: pd.DataFrame,
+    sites: List[str],
+    year: int,
+    *,
+    custom_prices: Optional[dict] = None,
+) -> None:
+    """Add a recap sheet with monthly billed totals per site (standard + mixé/lissé)."""
+    ws = wb.create_sheet(f"RECAP {year}")
+
+    n_sites = len(sites)
+    total_col = n_sites + 2  # A + sites + TOTAL
+
+    ws.cell(1, 1, f"Récapitulatif facturation {year}")
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_col)
+    _style_header_cell(ws.cell(1, 1))
+    ws.row_dimensions[1].height = 22
+
+    months = [
+        "Janvier","Février","Mars","Avril","Mai","Juin",
+        "Juillet","Août","Septembre","Octobre","Novembre","Décembre"
+    ]
+
+    def _block(start_row: int, label: str, category: str) -> int:
+        ws.cell(start_row, 1, label)
+        ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=total_col)
+        _style_header_cell(ws.cell(start_row, 1))
+
+        ws.cell(start_row + 1, 1, "Mois")
+        _style_header_cell(ws.cell(start_row + 1, 1))
+        for i, site in enumerate(sites, start=2):
+            c = ws.cell(start_row + 1, i, site)
+            _style_header_cell(c)
+        ctot = ws.cell(start_row + 1, total_col, "TOTAL")
+        _style_header_cell(ctot)
+
+        r = start_row + 2
+        for m in range(1, 13):
+            ws.cell(r, 1, months[m - 1])
+            _style_cell(ws.cell(r, 1))
+            row_total = 0.0
+
+            for i, site in enumerate(sites, start=2):
+                qty = records[
+                    (records["year"] == year)
+                    & (records["month"] == m)
+                    & (records["category"] == category)
+                    & (records["site"] == site)
+                ]["qty"].sum()
+
+                amount = float(qty) * _unit_price(category, site, custom_prices)
+                row_total += amount
+
+                cell = ws.cell(r, i, amount)
+                _style_cell(cell)
+                cell.number_format = '#,##0.00" €"'
+
+            cell_total = ws.cell(r, total_col, row_total)
+            _style_cell(cell_total)
+            cell_total.number_format = '#,##0.00" €"'
+            r += 1
+
+        ws.cell(r, 1, "TOTAL ANNUEL")
+        _style_header_cell(ws.cell(r, 1))
+
+        grand = 0.0
+        for i, site in enumerate(sites, start=2):
+            qty = records[
+                (records["year"] == year)
+                & (records["category"] == category)
+                & (records["site"] == site)
+            ]["qty"].sum()
+
+            amount = float(qty) * _unit_price(category, site, custom_prices)
+            grand += amount
+
+            cell = ws.cell(r, i, amount)
+            _style_header_cell(cell)
+            cell.number_format = '#,##0.00" €"'
+
+        cell_total = ws.cell(r, total_col, grand)
+        _style_header_cell(cell_total)
+        cell_total.number_format = '#,##0.00" €"'
+
+        return r + 2
+
+    next_row = _block(3, "FACTURATION — REPAS STANDARD", "repas")
+    _block(next_row, "FACTURATION — MIXÉ/LISSÉ", "mixe_lisse")
+
+    ws.column_dimensions["A"].width = 16
+    for i in range(2, total_col + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 18
+
+    ws.freeze_panes = "B5"
+
+
+def export_monthly_workbook(
+    records: pd.DataFrame,
+    out_path: str,
+    *,
+    custom_prices: Optional[dict] = None,
+) -> str:
+    """
+    Create an Excel workbook for billing.
+
+    Workbook contains 12 sheets (YYYY-01 -> YYYY-12) for the most recent year found in records,
+    plus a recap sheet at the end.
+    """
+    if records is None or records.empty:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Aucune donnée"
+        ws["A1"] = "Aucune semaine mémorisée pour la facturation."
+        wb.save(out_path)
+        return out_path
+
+    records = records.copy()
+    records["date"] = pd.to_datetime(records["date"]).dt.date
+
+    if "site" in records.columns:
+        records["site"] = records["site"].map(norm_site_facturation)
+
+    records["year"] = records["date"].map(lambda d: d.year)
+    records["month"] = records["date"].map(lambda d: d.month)
+
+    export_year = int(records["year"].max())
+    year_records = records[records["year"] == export_year]
+    sites = sorted(year_records["site"].dropna().unique().tolist(), key=lambda s: str(s).upper())
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    for m in range(1, 13):
+        y = export_year
+        sheet_name = f"{y}-{m:02d}"
+        ws = wb.create_sheet(sheet_name)
+
+        month_start = dt.date(y, m, 1)
+        if m == 12:
+            month_end = dt.date(y + 1, 1, 1) - dt.timedelta(days=1)
+        else:
+            month_end = dt.date(y, m + 1, 1) - dt.timedelta(days=1)
+
+        sub = records[(records["year"] == y) & (records["month"] == m)].copy()
+
+        r = 1
+        r = _write_month_block(ws, r, "Repas", "repas", sub, sites, month_start, month_end, custom_prices=custom_prices)
+        r += 2
+        _write_month_block(ws, r, "Mixé/Lissé", "mixe_lisse", sub, sites, month_start, month_end, custom_prices=custom_prices)
+
+        ws.column_dimensions["A"].width = 10
+        for i, _ in enumerate(sites, start=2):
+            ws.column_dimensions[get_column_letter(i)].width = 14
+        ws.column_dimensions[get_column_letter(len(sites) + 2)].width = 12
+
+        ws.freeze_panes = "B4"
+
+    _write_recap_sheet(wb, records, sites, export_year, custom_prices=custom_prices)
+
+    wb.save(out_path)
+    return out_path
