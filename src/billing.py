@@ -1,5 +1,100 @@
 
-from __future__ import annotations
+from __future_
+def _write_recap_sheet(
+    wb: openpyxl.Workbook,
+    records: pd.DataFrame,
+    sites: List[str],
+    year: int,
+    *,
+    custom_prices: Optional[dict] = None,
+) -> None:
+    """Add a recap sheet with monthly billed totals per site (standard + mixé/lissé)."""
+    ws = wb.create_sheet(f"RECAP {year}")
+
+    n_sites = len(sites)
+    total_col = n_sites + 2  # A + sites + TOTAL
+
+    # Title
+    ws.cell(1, 1, f"Récapitulatif facturation {year}")
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_col)
+    _style_header_cell(ws.cell(1, 1))
+    ws.row_dimensions[1].height = 22
+
+    months = [
+        "Janvier","Février","Mars","Avril","Mai","Juin",
+        "Juillet","Août","Septembre","Octobre","Novembre","Décembre"
+    ]
+
+    def _block(start_row: int, label: str, category: str) -> int:
+        # Block title
+        ws.cell(start_row, 1, label)
+        ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=total_col)
+        _style_header_cell(ws.cell(start_row, 1))
+
+        # Header row
+        ws.cell(start_row+1, 1, "Mois")
+        _style_header_cell(ws.cell(start_row+1, 1))
+        for i, site in enumerate(sites, start=2):
+            c = ws.cell(start_row+1, i, site)
+            _style_header_cell(c)
+        ctot = ws.cell(start_row+1, total_col, "TOTAL")
+        _style_header_cell(ctot)
+
+        # Data rows
+        r = start_row + 2
+        annual_total = 0.0
+        for m in range(1, 13):
+            ws.cell(r, 1, months[m-1])
+            _style_cell(ws.cell(r, 1))
+            row_total = 0.0
+            for i, site in enumerate(sites, start=2):
+                qty = records[
+                    (records["year"] == year)
+                    & (records["month"] == m)
+                    & (records["category"] == category)
+                    & (records["site"] == site)
+                ]["qty"].sum()
+                amount = float(qty) * _unit_price(category, site, custom_prices)
+                row_total += amount
+                cell = ws.cell(r, i, amount)
+                _style_cell(cell)
+                cell.number_format = '#,##0.00" €"'
+            annual_total += row_total
+            cell_total = ws.cell(r, total_col, row_total)
+            _style_cell(cell_total)
+            cell_total.number_format = '#,##0.00" €"'
+            r += 1
+
+        # Annual total row
+        ws.cell(r, 1, "TOTAL ANNUEL")
+        _style_header_cell(ws.cell(r, 1))
+        grand = 0.0
+        for i, site in enumerate(sites, start=2):
+            qty = records[
+                (records["year"] == year)
+                & (records["category"] == category)
+                & (records["site"] == site)
+            ]["qty"].sum()
+            amount = float(qty) * _unit_price(category, site, custom_prices)
+            grand += amount
+            cell = ws.cell(r, i, amount)
+            _style_header_cell(cell)
+            cell.number_format = '#,##0.00" €"'
+        cell_total = ws.cell(r, total_col, grand)
+        _style_header_cell(cell_total)
+        cell_total.number_format = '#,##0.00" €"'
+        return r + 2
+
+    next_row = _block(3, "FACTURATION — REPAS STANDARD", "repas")
+    _block(next_row, "FACTURATION — MIXÉ/LISSÉ", "mixe_lisse")
+
+    # Column widths
+    ws.column_dimensions["A"].width = 16
+    for i in range(2, total_col+1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = 18
+
+    ws.freeze_panes = "B5"
+_ import annotations
 
 import json
 import re
@@ -238,8 +333,8 @@ def load_records() -> pd.DataFrame:
 # -----------------------------
 
 DEFAULT_UNIT_PRICES = {
-    "repas": {"__default__": 6.50, "MAS": 6.65},
-    "mixe_lisse": {"__default__": 7.61, "MAS": 7.74},
+    "repas": {"__default__": 6.60, "MAS": 6.65},
+    "mixe_lisse": {"__default__": 7.85, "MAS": 7.74},
 }
 
 def _unit_price(category: str, site: str, custom_prices: Optional[dict] = None) -> float:
@@ -323,6 +418,9 @@ def export_monthly_workbook(
 
         # Freeze panes at first day row (keeps headers + day column visible)
         ws.freeze_panes = "B4"
+
+    # Recap sheet (monthly billed totals per site)
+    _write_recap_sheet(wb, records, sites, export_year, custom_prices=custom_prices)
 
     wb.save(out_path)
     return out_path
