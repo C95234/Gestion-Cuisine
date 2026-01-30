@@ -24,10 +24,10 @@ from pathlib import Path
 
 def apply_background(png_file: str):
     b64 = base64.b64encode(Path(png_file).read_bytes()).decode()
-    css = f'''
+    css = """
     <style>
     [data-testid="stAppViewContainer"], .stApp, .main {
-        background-image: url("data:image/png;base64,{b64}");
+        background-image: url("data:image/png;base64,B64");
         background-repeat: no-repeat;
         background-position: center 90px;
         background-size: 420px auto;
@@ -35,8 +35,8 @@ def apply_background(png_file: str):
     }
     header, section.main > div { background: transparent; }
     </style>
-    '''
-    st.markdown(css, unsafe_allow_html=True)
+    """
+    st.markdown(css.replace('B64', b64), unsafe_allow_html=True)
 # --- End background logo helpers ---
 
 import traceback
