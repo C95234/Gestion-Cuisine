@@ -241,114 +241,9 @@ DEFAULT_UNIT_PRICES = {
 
 
 def _unit_price(category: str, site: str, custom_prices: Optional[dict] = None) -> float:
-    """Return unit price for a category/site.
-
-    Note: site names coming from Excel can be inconsistent ("MAS", "M.A.S", "Mas", etc.).
-    We therefore normalise them before matching the pricing grid.
-    """
-
-    def _key(x: str) -> str:
-        x = (x or "").strip().upper()
-        # Keep letters/digits only (so "M.A.S" -> "MAS")
-        return re.sub(r"[^A-Z0-9]", "", x)
-
-    prices_raw = (custom_prices or DEFAULT_UNIT_PRICES).get(category, {})
-    # Normalise pricing keys once (so user custom dicts still work with punctuation/spaces)
-    prices = {(_key(k) if k != "__default__" else "__default__"): v for k, v in prices_raw.items()}
-
-    s = _key(site)
+    prices = (custom_prices or DEFAULT_UNIT_PRICES).get(category, {})
+    s = (site or "").strip().upper()
     return float(prices.get(s, prices.get("__default__", 0.0)))
-
-
-def _write_tarifs_sheet(wb: openpyxl.Workbook, *, custom_prices: Optional[dict] = None) -> str:
-    """Create/replace a 'TARIFS' sheet.
-
-    This sheet is used by Excel formulas (SUMIFS + VLOOKUP) so the workbook remains
-    "croisé" and recalculable even if the user edits quantities or prices afterwards.
-    """
-    name = "TARIFS"
-    if name in wb.sheetnames:
-        del wb[name]
-    ws = wb.create_sheet(name)
-    ws["A1"] = "clé"
-    ws["B1"] = "prix_unitaire"
-    _style_header_cell(ws["A1"])
-    _style_header_cell(ws["B1"])
-
-    grid = custom_prices or DEFAULT_UNIT_PRICES
-
-    r = 2
-    for category, d in grid.items():
-        # Ensure default first, then specifics
-        items = []
-        if "__default__" in d:
-            items.append(("__default__", d["__default__"]))
-        for k in sorted([x for x in d.keys() if x != "__default__"], key=lambda x: str(x)):
-            items.append((k, d[k]))
-
-        for site, price in items:
-            # We normalise the site key the same way as _unit_price
-            sk = re.sub(r"[^A-Z0-9]", "", str(site).strip().upper()) if site != "__default__" else "__default__"
-            ws.cell(r, 1, f"{category}|{sk}")
-            ws.cell(r, 2, float(price))
-            _style_cell(ws.cell(r, 1))
-            c = ws.cell(r, 2)
-            _style_cell(c)
-            c.number_format = "0.00"
-            r += 1
-
-    ws.column_dimensions["A"].width = 26
-    ws.column_dimensions["B"].width = 16
-    ws.freeze_panes = "A2"
-    return name
-
-
-def _write_data_sheet(wb: openpyxl.Workbook, records: pd.DataFrame) -> str:
-    """Create/replace a 'DONNEES' sheet containing the raw facturation lines.
-
-    Columns:
-      A: date (true Excel date)
-      B: site
-      C: category
-      D: qty
-
-    All calculations in the other sheets can be done via Excel formulas.
-    """
-    name = "DONNEES"
-    if name in wb.sheetnames:
-        del wb[name]
-    ws = wb.create_sheet(name)
-
-    headers = ["date", "site", "category", "qty"]
-    for j, h in enumerate(headers, start=1):
-        ws.cell(1, j, h)
-        _style_header_cell(ws.cell(1, j))
-
-    if records is None or records.empty:
-        ws.freeze_panes = "A2"
-        return name
-
-    rec = records.copy()
-    rec["date"] = pd.to_datetime(rec["date"]).dt.date
-    if "site" in rec.columns:
-        rec["site"] = rec["site"].map(norm_site_facturation)
-    rec = rec[["date", "site", "category", "qty"]].sort_values(["date", "category", "site"]).reset_index(drop=True)
-
-    for i, row in enumerate(rec.itertuples(index=False), start=2):
-        ws.cell(i, 1, row.date)
-        ws.cell(i, 2, str(row.site))
-        ws.cell(i, 3, str(row.category))
-        ws.cell(i, 4, int(row.qty))
-        for j in range(1, 5):
-            _style_cell(ws.cell(i, j))
-        ws.cell(i, 1).number_format = "yyyy-mm-dd"
-
-    ws.column_dimensions["A"].width = 14
-    ws.column_dimensions["B"].width = 18
-    ws.column_dimensions["C"].width = 14
-    ws.column_dimensions["D"].width = 10
-    ws.freeze_panes = "A2"
-    return name
 
 
 # -----------------------------
@@ -421,47 +316,42 @@ def _write_month_block(
     ws.cell(start_row + 2, total_col, title.upper())
     _style_header_cell(ws.cell(start_row + 2, total_col))
 
-    # --- Dynamic cross table ---
-    # Quantities are computed by Excel (SUMIFS) from the raw 'DONNEES' sheet.
-    # That way, users can edit quantities afterwards and totals update automatically.
-    days = pd.date_range(month_start, month_end, freq="D").date
+    cat = sub[sub["category"] == category].copy()
+    cat["date"] = pd.to_datetime(cat["date"]).dt.date
 
-    month_anchor = f"{get_column_letter(total_col)}{start_row}"  # contains month_start date
+    days = pd.date_range(month_start, month_end, freq="D").date
+    pivot = pd.DataFrame(index=days, columns=sites, data=0)
+
+    if not cat.empty:
+        for _, row in cat.iterrows():
+            d = row["date"]
+            s = row["site"]
+            if d in pivot.index and s in pivot.columns:
+                pivot.loc[d, s] += int(row["qty"])
 
     row = start_row + 3
     for d in days:
         ws.cell(row, 1, d.day)
         _style_cell(ws.cell(row, 1))
-
+        day_total = 0
         for i, site in enumerate(sites, start=2):
-            # date = DATE(YEAR($anchor), MONTH($anchor), $Arow)
-            # qty  = SUMIFS(DONNEES!$D:$D, DONNEES!$A:$A, date, DONNEES!$B:$B, site, DONNEES!$C:$C, category)
-            addr_day = f"$A{row}"
-            date_expr = f"DATE(YEAR(${month_anchor}),MONTH(${month_anchor}),{addr_day})"
-            formula = (
-                f"=SUMIFS(DONNEES!$D:$D,"
-                f"DONNEES!$A:$A,{date_expr},"
-                f"DONNEES!$B:$B,\"{site}\","
-                f"DONNEES!$C:$C,\"{category}\")"
-            )
-            cell = ws.cell(row, i, formula)
+            v = int(pivot.loc[d, site])
+            day_total += v
+            cell = ws.cell(row, i, v)
             _style_cell(cell)
-
-        # Daily total = SUM of the site cells
-        first_site = get_column_letter(2)
-        last_site = get_column_letter(total_col - 1)
-        ws.cell(row, total_col, f"=SUM({first_site}{row}:{last_site}{row})")
+        ws.cell(row, total_col, day_total)
         _style_cell(ws.cell(row, total_col))
         row += 1
 
-    # Totals row (per site + grand total)
     ws.cell(row, 1, "TOTAL")
     _style_header_cell(ws.cell(row, 1))
-    for i, _ in enumerate(sites, start=2):
-        col = get_column_letter(i)
-        cell = ws.cell(row, i, f"=SUM({col}{start_row + 3}:{col}{row - 1})")
+    grand_total = 0
+    for i, site in enumerate(sites, start=2):
+        v = int(pivot[site].sum())
+        grand_total += v
+        cell = ws.cell(row, i, v)
         _style_header_cell(cell)
-    ws.cell(row, total_col, f"=SUM({get_column_letter(total_col)}{start_row + 3}:{get_column_letter(total_col)}{row - 1})")
+    ws.cell(row, total_col, grand_total)
     _style_header_cell(ws.cell(row, total_col))
 
     return row
@@ -508,41 +398,24 @@ def _write_recap_sheet(
         for m in range(1, 13):
             ws.cell(r, 1, months[m - 1])
             _style_cell(ws.cell(r, 1))
-            # Excel-driven recap (dynamic): amounts are computed with SUMIFS on DONNEES
-            # and a VLOOKUP on TARIFS.
-            row_total_cells = []
-
-            start_date = f"DATE({year},{m},1)"
-            # end_date = first day of next month (handles December)
-            if m == 12:
-                end_date = f"DATE({year + 1},1,1)"
-            else:
-                end_date = f"DATE({year},{m + 1},1)"
+            row_total = 0.0
 
             for i, site in enumerate(sites, start=2):
-                # qty = SUMIFS(DONNEES!$D:$D, DONNEES!$A:$A,">="&start, DONNEES!$A:$A,"<"&end, DONNEES!$B:$B,site, DONNEES!$C:$C,category)
-                qty_expr = (
-                    f"SUMIFS(DONNEES!$D:$D,"
-                    f"DONNEES!$A:$A,\">=\"&{start_date},"
-                    f"DONNEES!$A:$A,\"<\"&{end_date},"
-                    f"DONNEES!$B:$B,\"{site}\","
-                    f"DONNEES!$C:$C,\"{category}\")"
-                )
+                qty = records[
+                    (records["year"] == year)
+                    & (records["month"] == m)
+                    & (records["category"] == category)
+                    & (records["site"] == site)
+                ]["qty"].sum()
 
-                # price = IFERROR(VLOOKUP(category|site, TARIFS!$A$2:$B$200,2,FALSE), VLOOKUP(category|__default__, ...))
-                sk = re.sub(r"[^A-Z0-9]", "", str(site).strip().upper())
-                price_expr = (
-                    f"IFERROR(VLOOKUP(\"{category}|{sk}\",TARIFS!$A$2:$B$200,2,FALSE),"
-                    f"VLOOKUP(\"{category}|__default__\",TARIFS!$A$2:$B$200,2,FALSE))"
-                )
+                amount = float(qty) * _unit_price(category, site, custom_prices)
+                row_total += amount
 
-                formula = f"=({qty_expr})*({price_expr})"
-                cell = ws.cell(r, i, formula)
+                cell = ws.cell(r, i, amount)
                 _style_cell(cell)
                 cell.number_format = '#,##0.00" €"'
-                row_total_cells.append(f"{get_column_letter(i)}{r}")
 
-            cell_total = ws.cell(r, total_col, f"=SUM({row_total_cells[0]}:{row_total_cells[-1]})" if row_total_cells else 0)
+            cell_total = ws.cell(r, total_col, row_total)
             _style_cell(cell_total)
             cell_total.number_format = '#,##0.00" €"'
             r += 1
@@ -550,14 +423,22 @@ def _write_recap_sheet(
         ws.cell(r, 1, "TOTAL ANNUEL")
         _style_header_cell(ws.cell(r, 1))
 
-        # Annual totals = sum of the 12 monthly lines above
-        for i, _ in enumerate(sites, start=2):
-            col = get_column_letter(i)
-            cell = ws.cell(r, i, f"=SUM({col}{start_row + 2}:{col}{r - 1})")
+        grand = 0.0
+        for i, site in enumerate(sites, start=2):
+            qty = records[
+                (records["year"] == year)
+                & (records["category"] == category)
+                & (records["site"] == site)
+            ]["qty"].sum()
+
+            amount = float(qty) * _unit_price(category, site, custom_prices)
+            grand += amount
+
+            cell = ws.cell(r, i, amount)
             _style_header_cell(cell)
             cell.number_format = '#,##0.00" €"'
 
-        cell_total = ws.cell(r, total_col, f"=SUM({get_column_letter(2)}{r}:{get_column_letter(total_col - 1)}{r})")
+        cell_total = ws.cell(r, total_col, grand)
         _style_header_cell(cell_total)
         cell_total.number_format = '#,##0.00" €"'
 
@@ -578,12 +459,11 @@ def export_monthly_workbook(
     out_path: str,
     *,
     custom_prices: Optional[dict] = None,
-    year: Optional[int] = None,
 ) -> str:
     """
     Create an Excel workbook for billing.
 
-    Workbook contains 12 sheets (YYYY-01 -> YYYY-12) for the selected year,
+    Workbook contains 12 sheets (YYYY-01 -> YYYY-12) for the most recent year found in records,
     plus a recap sheet at the end.
     """
     if records is None or records.empty:
@@ -603,16 +483,12 @@ def export_monthly_workbook(
     records["year"] = records["date"].map(lambda d: d.year)
     records["month"] = records["date"].map(lambda d: d.month)
 
-    export_year = int(year) if year is not None else int(records["year"].max())
+    export_year = int(records["year"].max())
     year_records = records[records["year"] == export_year]
     sites = sorted(year_records["site"].dropna().unique().tolist(), key=lambda s: str(s).upper())
 
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
-
-    # Raw data + pricing grid used by Excel formulas (keeps the workbook dynamic)
-    _write_data_sheet(wb, records)
-    _write_tarifs_sheet(wb, custom_prices=custom_prices)
 
     for m in range(1, 13):
         y = export_year
