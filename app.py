@@ -103,6 +103,7 @@ mixe_lisse_to_daily_totals = billing.mixe_lisse_to_daily_totals
 save_week = billing.save_week
 load_records = billing.load_records
 export_monthly_workbook = billing.export_monthly_workbook
+import_billing_workbook = billing.import_billing_workbook
 
 # allergènes
 learn_from_filled_allergen_workbook = learner.learn_from_filled_allergen_workbook
@@ -618,6 +619,23 @@ try:
                         file_name="Facturation.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
+
+        st.divider()
+        st.markdown("### Import facturation (après corrections)")
+        st.caption(
+            "Si tu as corrigé des effectifs directement dans le classeur **Facturation.xlsx**, "
+            "tu peux le ré-uploader ici : l'app mettra à jour sa mémoire (records.csv) pour les dates présentes."
+        )
+        corrected = st.file_uploader("Facturation.xlsx corrigé", type=["xlsx"], key="factu_corrected")
+        if corrected is not None:
+            if st.button("Importer ce classeur corrigé", key="import_factu", type="primary"):
+                try:
+                    tmp_in = _save_uploaded_file(corrected, suffix=".xlsx")
+                    n_removed, n_added = import_billing_workbook(tmp_in, replace_dates=True)
+                    st.success(f"Import OK : {n_added} lignes importées, {n_removed} lignes remplacées (dates concernées).")
+                except Exception as e:
+                    st.error("Erreur pendant l'import du classeur.")
+                    st.exception(e)
 
     with tab_all:
         st.subheader("Tableaux allergènes (format EXACT)")
