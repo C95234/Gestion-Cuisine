@@ -17,6 +17,42 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import streamlit as st
+
+# --- Background logo injection ---
+import base64
+from pathlib import Path as _Path
+
+def _set_bg_from_png(png_path: _Path) -> None:
+    try:
+        b64 = base64.b64encode(png_path.read_bytes()).decode("utf-8")
+    except Exception:
+        return
+    css = f"""
+    <style>
+    /* Streamlit containers (robust across versions) */
+    html, body {{
+        height: 100%;
+    }}
+    [data-testid="stAppViewContainer"], .stApp {{
+        background-image: url("data:image/png;base64,{b64}") !important;
+        background-size: 45% !important;
+        background-repeat: no-repeat !important;
+        background-position: center 85px !important;
+        background-attachment: fixed !important;
+    }}
+    /* Make inner blocks transparent so the background is visible */
+    [data-testid="stAppViewContainer"] > .main, .main {{
+        background: transparent !important;
+    }}
+    [data-testid="stHeader"], header {{
+        background: transparent !important;
+    }}
+    </style>
+    """
+    st.markdown(css, unsafe_allow_html=True)
+
+# --- End background injection ---
+
 import traceback
 import pandas as pd
 import datetime as dt
@@ -155,6 +191,8 @@ def set_background():
 
 
 def _save_uploaded_file(uploaded, suffix: str) -> str:
+    if uploaded is None:
+        raise ValueError("Aucun fichier fourni (upload manquant).")
     """Save an UploadedFile to a temp file and return path."""
     import tempfile
     import os
@@ -162,7 +200,7 @@ def _save_uploaded_file(uploaded, suffix: str) -> str:
     fd, path = tempfile.mkstemp(suffix=suffix)
     os.close(fd)
     with open(path, "wb") as f:
-        f.write(uploaded.getbuffer())
+        f.write(uploaded.getvalue())  # bytes-safe
     return path
 
 
@@ -177,6 +215,10 @@ def _temp_out_path(suffix: str) -> str:
 
 
 st.set_page_config(page_title="Gestion cuisine centrale", layout="wide")
+
+# Affiche le logo en fond (doit venir APRÈS st.set_page_config)
+_set_bg_from_png(_Path(__file__).parent / "logo_background.png")
+
 set_background()
 
 st.title("Gestion cuisine centrale")
