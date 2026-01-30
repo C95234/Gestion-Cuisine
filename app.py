@@ -17,6 +17,43 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import streamlit as st
+
+# --- Background logo injection ---
+import base64
+from pathlib import Path as _Path
+
+def _set_bg_from_png(png_path: _Path) -> None:
+    try:
+        b64 = base64.b64encode(png_path.read_bytes()).decode("utf-8")
+    except Exception:
+        return
+    css = f"""
+    <style>
+    /* Streamlit containers (robust across versions) */
+    html, body {{
+        height: 100%;
+    }}
+    [data-testid="stAppViewContainer"], .stApp {{
+        background-image: url("data:image/png;base64,{b64}") !important;
+        background-size: 45% !important;
+        background-repeat: no-repeat !important;
+        background-position: center 85px !important;
+        background-attachment: fixed !important;
+    }}
+    /* Make inner blocks transparent so the background is visible */
+    [data-testid="stAppViewContainer"] > .main, .main {{
+        background: transparent !important;
+    }}
+    [data-testid="stHeader"], header {{
+        background: transparent !important;
+    }}
+    </style>
+    """
+    st.markdown(css, unsafe_allow_html=True)
+
+_set_bg_from_png(_Path(__file__).parent / "logo_background.png")
+# --- End background injection ---
+
 import traceback
 import pandas as pd
 import datetime as dt
