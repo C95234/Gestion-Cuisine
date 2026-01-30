@@ -18,62 +18,25 @@ if str(ROOT) not in sys.path:
 
 import streamlit as st
 
-def _safe_tabs(labels):
-    """Return a list of context managers like st.tabs, with a fallback for older Streamlit."""
-    try:
-        tabs_obj = st.tabs(labels)
-        # Newer Streamlit returns a list of DeltaGenerator
-        if isinstance(tabs_obj, (list, tuple)) and len(tabs_obj) == len(labels):
-            return list(tabs_obj)
-        # Some variants may return a single object; treat as unsupported
-        raise TypeError("st.tabs returned unexpected type")
-    except Exception:
-        choice = st.selectbox("Section", labels, index=0)
-        containers = [st.container() for _ in labels]
-        for lab, cont in zip(labels, containers):
-            if lab != choice:
-                # Hide content by placing it inside an empty container
-                with cont:
-                    st.empty()
-        # We return containers; caller should still use `with tab:` blocks
-        return containers
-
-
-# --- Background logo helpers (no Streamlit call before set_page_config) ---
+# --- Background logo helpers ---
 import base64
-from pathlib import Path as _Path
+from pathlib import Path
 
-def _bg_css(png_path: str) -> str:
-    b64 = base64.b64encode(_Path(png_path).read_bytes()).decode()
-    return f"""
+def apply_background(png_file: str):
+    b64 = base64.b64encode(Path(png_file).read_bytes()).decode()
+    css = f'''
     <style>
-    /* Streamlit containers (robust across versions) */
-    [data-testid='stAppViewContainer'],
-    .stApp,
-    .main {
-        background-image: url('data:image/png;base64,{b64}');
+    [data-testid="stAppViewContainer"], .stApp, .main {
+        background-image: url("data:image/png;base64,{b64}");
         background-repeat: no-repeat;
         background-position: center 90px;
         background-size: 420px auto;
         background-attachment: fixed;
     }
-    /* Make common layers transparent so background shows */
-    [data-testid='stAppViewContainer'] > .main { background: transparent; }
-    section.main > div { background: transparent; }
-    header { background: transparent; }
+    header, section.main > div { background: transparent; }
     </style>
-    """
-
-def apply_background(png_file: str) -> None:
-    # Must be called AFTER st.set_page_config()
-
-# Logo background
-apply_background(str(Path(__file__).parent / 'logo_background.png'))
-
-# Affiche le logo en fond (doit venir APRÈS st.set_page_config)
-apply_background(str(Path(__file__).parent / 'logo_background.png'))
-
-    st.markdown(_bg_css(png_file), unsafe_allow_html=True)
+    '''
+    st.markdown(css, unsafe_allow_html=True)
 # --- End background logo helpers ---
 
 import traceback
@@ -236,6 +199,7 @@ def _temp_out_path(suffix: str) -> str:
 
 
 st.set_page_config(page_title="Gestion cuisine centrale", layout="wide")
+apply_background(str(Path(__file__).parent / 'logo_background.png'))
 set_background()
 
 st.title("Gestion cuisine centrale")
@@ -262,7 +226,7 @@ with st.sidebar:
             "Ces listes sont mémorisées (JSON) et utilisées pour les menus déroulants dans le bon de commande."
         )
 
-        ctab1, ctab2, ctab3 = _safe_tabs(["Coefficients", "Unités", "Fournisseurs"])
+        ctab1, ctab2, ctab3 = st.tabs(["Coefficients", "Unités", "Fournisseurs"])
 
         with ctab1:
             dfc = pd.DataFrame(
