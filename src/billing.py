@@ -316,231 +316,45 @@ def _write_month_block(
     ws.cell(start_row + 2, total_col, title.upper())
     _style_header_cell(ws.cell(start_row + 2, total_col))
 
-    # --- Remplissage des quantités (éditables) ---
-    # On écrit des valeurs initiales (issues de la mémoire) mais on met les totaux en formules,
-    # afin que le classeur devienne la source de vérité après correction manuelle.
-
     cat = sub[sub["category"] == category].copy()
     cat["date"] = pd.to_datetime(cat["date"]).dt.date
 
     days = pd.date_range(month_start, month_end, freq="D").date
     pivot = pd.DataFrame(index=days, columns=sites, data=0)
-    if not cat.empty:
-        for _, row0 in cat.iterrows():
-            d = row0["date"]
-            s = row0["site"]
-            if d in pivot.index and s in pivot.columns:
-                pivot.loc[d, s] += int(row0["qty"])
 
-    first_day_row = start_row + 3
-    row = first_day_row
+    if not cat.empty:
+        for _, row in cat.iterrows():
+            d = row["date"]
+            s = row["site"]
+            if d in pivot.index and s in pivot.columns:
+                pivot.loc[d, s] += int(row["qty"])
+
+    row = start_row + 3
     for d in days:
         ws.cell(row, 1, d.day)
         _style_cell(ws.cell(row, 1))
+        day_total = 0
         for i, site in enumerate(sites, start=2):
             v = int(pivot.loc[d, site])
-            cell = ws.cell(row, i, v)  # valeur éditable
+            day_total += v
+            cell = ws.cell(row, i, v)
             _style_cell(cell)
-
-        # TOTAL jour = somme des sites (formule)
-        left = get_column_letter(2)
-        right = get_column_letter(total_col - 1)
-        f = f"=SUM({left}{row}:{right}{row})"
-        ws.cell(row, total_col, f)
+        ws.cell(row, total_col, day_total)
         _style_cell(ws.cell(row, total_col))
         row += 1
 
-    # TOTAL mois
-    total_row = row
-    ws.cell(total_row, 1, "TOTAL")
-    _style_header_cell(ws.cell(total_row, 1))
-
-    for i in range(2, total_col):
-        col_letter = get_column_letter(i)
-        f = f"=SUM({col_letter}{first_day_row}:{col_letter}{total_row-1})"
-        cell = ws.cell(total_row, i, f)
+    ws.cell(row, 1, "TOTAL")
+    _style_header_cell(ws.cell(row, 1))
+    grand_total = 0
+    for i, site in enumerate(sites, start=2):
+        v = int(pivot[site].sum())
+        grand_total += v
+        cell = ws.cell(row, i, v)
         _style_header_cell(cell)
+    ws.cell(row, total_col, grand_total)
+    _style_header_cell(ws.cell(row, total_col))
 
-    # Total global = somme des totaux sites
-    left = get_column_letter(2)
-    right = get_column_letter(total_col - 1)
-    ws.cell(total_row, total_col, f"=SUM({left}{total_row}:{right}{total_row})")
-    _style_header_cell(ws.cell(total_row, total_col))
-
-    return total_row
-
-
-def import_billing_workbook(
-    xlsx_path: str,
-    *,
-    replace_dates: bool = True,
-) -> Tuple[int, int]:
-    """Importe un classeur Facturation.xlsx corrigé et met à jour la mémoire (records.csv).
-
-    Le classeur contient des feuilles mensuelles nommées 'YYYY-MM'.
-    On relit les blocs 'Repas' et 'Mixé/Lissé' (quantités par jour et par site).
-
-    Si replace_dates=True, on remplace toutes les lignes existantes pour les dates présentes
-    dans le classeur (catégories repas + mixé/lissé).
-
-    Retourne (n_repas, n_ml) : nombre de lignes jour/site importées.
-    """
-    # On charge 2 fois :
-    # - data_only=False pour lire la structure (et les dates en en-tête)
-    # - data_only=True pour récupérer les valeurs calculées si Excel a déjà évalué les formules
-    wb = openpyxl.load_workbook(xlsx_path, data_only=False)
-    wb_values = openpyxl.load_workbook(xlsx_path, data_only=True)
-
-    # Collecte des enregistrements
-    rows = []
-    n_repas = 0
-    n_ml = 0
-    imported_dates = set()
-
-    def _parse_month_sheet(ws) -> None:
-        nonlocal n_repas, n_ml
-        ws_val = wb_values[ws.title]
-
-        # Sites sont sur la ligne start_row+1 (row 2 du bloc) colonnes B.. jusqu'à 'TOTAL'
-        def _read_sites(header_row: int) -> Tuple[List[str], int]:
-            sites_local = []
-            col = 2
-            while True:
-                v = ws.cell(header_row, col).value
-                if v is None:
-                    break
-                if str(v).strip().upper() == "TOTAL":
-                    break
-                sites_local.append(str(v).strip())
-                col += 1
-            total_col_local = col
-            return sites_local, total_col_local
-
-        def _parse_block(start_row: int, category: str) -> None:
-            # start_row layout per export: start_row title, start_row+1 header with sites, start_row+3 first day row
-            sites_local, total_col_local = _read_sites(start_row + 1)
-            if not sites_local:
-                return
-
-            # month_start date stored in title row last col (TOTAL col)
-            month_start_val = ws.cell(start_row, total_col_local).value
-            if isinstance(month_start_val, dt.datetime):
-                month_start = month_start_val.date()
-            elif isinstance(month_start_val, dt.date):
-                month_start = month_start_val
-            else:
-                # fallback: infer from sheet name
-                m = re.match(r"^(\d{4})-(\d{2})$", ws.title.strip())
-                if not m:
-                    return
-                month_start = dt.date(int(m.group(1)), int(m.group(2)), 1)
-
-            # iterate day rows until TOTAL label in column A
-            r = start_row + 3
-            while True:
-                a = ws.cell(r, 1).value
-                if a is None:
-                    break
-                if str(a).strip().upper() == "TOTAL":
-                    break
-                try:
-                    day = int(a)
-                except Exception:
-                    break
-                try:
-                    d = dt.date(month_start.year, month_start.month, day)
-                except Exception:
-                    r += 1
-                    continue
-
-                for i, site in enumerate(sites_local, start=2):
-                    cell = ws.cell(r, i)
-                    v = cell.value
-                    if isinstance(v, str) and v.strip().startswith("="):
-                        v = ws_val.cell(r, i).value
-                    # si formule, on garde la formule (mais on ne peut pas recalculer ici) -> on lit la valeur si possible
-                    # on privilégie un nombre direct
-                    qty = 0
-                    if isinstance(v, (int, float)):
-                        qty = int(v)
-                    else:
-                        # si c'est une formule, on essaye data_only via second load? (trop coûteux) => 0
-                        try:
-                            qty = int(float(v))
-                        except Exception:
-                            qty = 0
-
-                    rows.append({
-                        "date": d,
-                        "site": norm_site_facturation(site),
-                        "category": category,
-                        "qty": qty,
-                        "week_monday": (d - dt.timedelta(days=d.weekday())).isoformat(),
-                        "source": f"import:{Path(xlsx_path).name}",
-                    })
-
-                    if category == "repas":
-                        n_repas += 1
-                    else:
-                        n_ml += 1
-
-                imported_dates.add(d)
-                r += 1
-
-        # Repas block at row 1, mixé/lissé after it
-        # We need to compute where the second block starts: depends on number of days.
-        # Find it by searching for title 'Mixé/Lissé' in col A.
-        repas_start = 1
-        _parse_block(repas_start, "repas")
-
-        mixe_start = None
-        for r in range(1, ws.max_row + 1):
-            v = ws.cell(r, 1).value
-            if v is None:
-                continue
-            if _norm(v) == _norm("Mixé/Lissé"):
-                mixe_start = r
-                break
-        if mixe_start:
-            _parse_block(mixe_start, "mixe_lisse")
-
-    # Parse monthly sheets
-    month_re = re.compile(r"^\d{4}-\d{2}$")
-    for name in wb.sheetnames:
-        if month_re.match(name.strip()):
-            _parse_month_sheet(wb[name])
-
-    if not rows:
-        return (0, 0)
-
-    new = pd.DataFrame(rows)
-    new["date"] = pd.to_datetime(new["date"]).dt.date
-    new["qty"] = pd.to_numeric(new["qty"], errors="coerce").fillna(0).astype(int)
-
-    p = _records_path()
-    if p.exists():
-        old = pd.read_csv(p, parse_dates=["date"])
-        old["date"] = pd.to_datetime(old["date"]).dt.date
-    else:
-        old = pd.DataFrame(columns=["date","site","category","qty","week_monday","source"])
-
-    if replace_dates and imported_dates:
-        old = old.loc[~(old["date"].isin(list(imported_dates)) & old["category"].isin(["repas","mixe_lisse"]))].copy()
-
-    merged = pd.concat([old, new], ignore_index=True)
-    merged.to_csv(p, index=False)
-
-    # meta: track weeks
-    meta = _read_meta()
-    meta.setdefault("saved_weeks", [])
-    for d in sorted(imported_dates):
-        w = (d - dt.timedelta(days=d.weekday())).isoformat()
-        if w not in meta["saved_weeks"]:
-            meta["saved_weeks"].append(w)
-    meta["saved_weeks"] = sorted(set(meta["saved_weeks"]))
-    _write_meta(meta)
-
-    return (int(n_repas), int(n_ml))
+    return row
 
 
 def _write_recap_sheet(
@@ -551,12 +365,7 @@ def _write_recap_sheet(
     *,
     custom_prices: Optional[dict] = None,
 ) -> None:
-    """Add a recap sheet with monthly billed totals per site.
-
-    ⚠️ Important: le récap est généré en **formules Excel** qui pointent vers
-    les feuilles mensuelles. Ainsi, si l'utilisateur corrige les effectifs dans
-    le classeur, le récap se met à jour sans régénérer côté code.
-    """
+    """Add a recap sheet with monthly billed totals per site (standard + mixé/lissé)."""
     ws = wb.create_sheet(f"RECAP {year}")
 
     n_sites = len(sites)
@@ -587,56 +396,51 @@ def _write_recap_sheet(
 
         r = start_row + 2
         for m in range(1, 13):
-            sheet_name = f"{year}-{m:02d}"
             ws.cell(r, 1, months[m - 1])
             _style_cell(ws.cell(r, 1))
+            row_total = 0.0
 
-            # lignes TOTAL dans la feuille mensuelle
-            month_start = dt.date(year, m, 1)
-            if m == 12:
-                month_end = dt.date(year + 1, 1, 1) - dt.timedelta(days=1)
-            else:
-                month_end = dt.date(year, m + 1, 1) - dt.timedelta(days=1)
-            n_days = (month_end - month_start).days + 1
-
-            if category == "repas":
-                block_start = 1
-            else:
-                # bloc 2 commence 2 lignes après la fin du bloc 1
-                block1_total_row = 1 + 3 + n_days
-                block_start = block1_total_row + 2
-            total_row_in_month = block_start + 3 + n_days  # ligne "TOTAL" du bloc
-
-            # Pour chaque site: Montant = Qté totale du mois * prix unitaire (ligne titre)
             for i, site in enumerate(sites, start=2):
-                col_letter = get_column_letter(i)
-                qty_cell = f"'{sheet_name}'!{col_letter}{total_row_in_month}"
-                price_cell = f"'{sheet_name}'!{col_letter}{block_start}"  # prix unitaire en ligne titre
-                formula = f"={qty_cell}*{price_cell}"
-                cell = ws.cell(r, i, formula)
+                qty = records[
+                    (records["year"] == year)
+                    & (records["month"] == m)
+                    & (records["category"] == category)
+                    & (records["site"] == site)
+                ]["qty"].sum()
+
+                amount = float(qty) * _unit_price(category, site, custom_prices)
+                row_total += amount
+
+                cell = ws.cell(r, i, amount)
                 _style_cell(cell)
                 cell.number_format = '#,##0.00" €"'
 
-            # TOTAL ligne = somme des sites
-            left = get_column_letter(2)
-            right = get_column_letter(total_col - 1)
-            cell_total = ws.cell(r, total_col, f"=SUM({left}{r}:{right}{r})")
+            cell_total = ws.cell(r, total_col, row_total)
             _style_cell(cell_total)
             cell_total.number_format = '#,##0.00" €"'
             r += 1
 
-        # TOTAL annuel
         ws.cell(r, 1, "TOTAL ANNUEL")
         _style_header_cell(ws.cell(r, 1))
-        for i in range(2, total_col):
-            col_letter = get_column_letter(i)
-            cell = ws.cell(r, i, f"=SUM({col_letter}{start_row+2}:{col_letter}{r-1})")
+
+        grand = 0.0
+        for i, site in enumerate(sites, start=2):
+            qty = records[
+                (records["year"] == year)
+                & (records["category"] == category)
+                & (records["site"] == site)
+            ]["qty"].sum()
+
+            amount = float(qty) * _unit_price(category, site, custom_prices)
+            grand += amount
+
+            cell = ws.cell(r, i, amount)
             _style_header_cell(cell)
             cell.number_format = '#,##0.00" €"'
 
-        ws.cell(r, total_col, f"=SUM({get_column_letter(2)}{r}:{get_column_letter(total_col-1)}{r})")
-        _style_header_cell(ws.cell(r, total_col))
-        ws.cell(r, total_col).number_format = '#,##0.00" €"'
+        cell_total = ws.cell(r, total_col, grand)
+        _style_header_cell(cell_total)
+        cell_total.number_format = '#,##0.00" €"'
 
         return r + 2
 
@@ -715,167 +519,3 @@ def export_monthly_workbook(
 
     wb.save(out_path)
     return out_path
-
-
-# -----------------------------
-# Excel import (monthly workbook corrected by user)
-# -----------------------------
-
-def _iter_month_sheets(wb: openpyxl.Workbook) -> List[Tuple[int,int,openpyxl.worksheet.worksheet.Worksheet]]:
-    """Yield (year, month, worksheet) for sheets named YYYY-MM."""
-    out = []
-    for ws in wb.worksheets:
-        m = re.match(r"^(\d{4})-(\d{2})$", str(ws.title).strip())
-        if not m:
-            continue
-        y = int(m.group(1))
-        mo = int(m.group(2))
-        out.append((y, mo, ws))
-    out.sort(key=lambda t: (t[0], t[1]))
-    return out
-
-
-def _parse_block(ws, title: str) -> Tuple[dt.date, List[str], List[Tuple[dt.date, str, str, int]]]:
-    """Parse a block ('Repas' or 'Mixé/Lissé') and return rows as (date, site, category, qty)."""
-    # find title in column A
-    start_row = None
-    for r in range(1, ws.max_row + 1):
-        if str(ws.cell(r, 1).value).strip().lower() == title.strip().lower():
-            start_row = r
-            break
-    if start_row is None:
-        return None, [], []
-
-    # Sites on row start_row+1, columns B.. until 'TOTAL'
-    sites = []
-    c = 2
-    while c <= ws.max_column:
-        v = ws.cell(start_row + 1, c).value
-        if v is None:
-            c += 1
-            continue
-        sv = str(v).strip()
-        if sv.upper() == "TOTAL":
-            break
-        sites.append(sv)
-        c += 1
-
-    # Month start date is stored in last column (TOTAL col) on start_row
-    total_col = 2 + len(sites)
-    month_start_val = ws.cell(start_row, total_col).value
-    if isinstance(month_start_val, dt.datetime):
-        month_start = month_start_val.date()
-    elif isinstance(month_start_val, dt.date):
-        month_start = month_start_val
-    else:
-        # fallback from sheet name elsewhere handled by caller
-        month_start = None
-
-    # Daily rows start at start_row+3 until 'TOTAL' in col A
-    rows = []
-    r = start_row + 3
-    while r <= ws.max_row:
-        vday = ws.cell(r, 1).value
-        if vday is None:
-            r += 1
-            continue
-        if str(vday).strip().upper() == "TOTAL":
-            break
-        # day number expected
-        try:
-            day_num = int(vday)
-        except Exception:
-            r += 1
-            continue
-        if month_start is None:
-            r += 1
-            continue
-        d = dt.date(month_start.year, month_start.month, day_num)
-        category = "repas" if title.strip().lower().startswith("repas") else "mixe_lisse"
-        for i, site in enumerate(sites, start=2):
-            qty_val = ws.cell(r, i).value
-            try:
-                qty = int(qty_val) if qty_val is not None else 0
-            except Exception:
-                qty = 0
-            rows.append((d, norm_site_facturation(site), category, qty))
-        r += 1
-    return month_start, sites, rows
-
-
-def import_billing_workbook(
-    in_path: str,
-    *,
-    replace_dates: bool = True,
-) -> Tuple[int, int]:
-    """Import a corrected Facturation.xlsx workbook and update records.csv.
-
-    - Reads sheets named YYYY-MM.
-    - Parses the two blocks: Repas + Mixé/Lissé.
-    - If replace_dates=True: for any imported date, existing records for those dates/categories/sites are removed and replaced.
-    Returns: (n_replaced, n_added)
-    """
-    wb = openpyxl.load_workbook(in_path, data_only=False)
-    imported = []
-
-    for y, m, ws in _iter_month_sheets(wb):
-        # parse both blocks
-        ms1, sites1, rows1 = _parse_block(ws, "Repas")
-        ms2, sites2, rows2 = _parse_block(ws, "Mixé/Lissé")
-
-        # If month_start missing, build from sheet name and re-parse day dates
-        if ms1 is None:
-            # We can still infer month_start
-            month_start = dt.date(y, m, 1)
-            # patch rows dates
-            fixed = []
-            for (d, site, cat, qty) in rows1:
-                fixed.append((dt.date(y, m, d.day), site, cat, qty))
-            rows1 = fixed
-        if ms2 is None:
-            fixed = []
-            for (d, site, cat, qty) in rows2:
-                fixed.append((dt.date(y, m, d.day), site, cat, qty))
-            rows2 = fixed
-
-        imported.extend(rows1)
-        imported.extend(rows2)
-
-    if not imported:
-        return 0, 0
-
-    # Build dataframe
-    df_new = pd.DataFrame(imported, columns=["date","site","category","qty"])
-    df_new["date"] = pd.to_datetime(df_new["date"]).dt.date
-    df_new["qty"] = pd.to_numeric(df_new["qty"], errors="coerce").fillna(0).astype(int)
-    df_new["week_monday"] = df_new["date"].map(lambda d: (d - dt.timedelta(days=d.weekday())))
-    df_new["source"] = "import_facturation"
-
-    # Load existing
-    df_old = load_records()
-    if df_old is None or df_old.empty:
-        df_out = df_new.copy()
-        df_out.to_csv(_records_path(), index=False)
-        return 0, int(len(df_new))
-
-    # Normalize
-    df_old = df_old.copy()
-    df_old["date"] = pd.to_datetime(df_old["date"]).dt.date
-    if "site" in df_old.columns:
-        df_old["site"] = df_old["site"].map(norm_site_facturation)
-    if "category" in df_old.columns:
-        df_old["category"] = df_old["category"].astype(str)
-    df_old["qty"] = pd.to_numeric(df_old["qty"], errors="coerce").fillna(0).astype(int)
-
-    # Replace dates present in import
-    if replace_dates:
-        key_dates = set(df_new["date"].unique().tolist())
-        mask_keep = ~df_old["date"].isin(key_dates)
-        n_removed = int((~mask_keep).sum())
-        df_out = pd.concat([df_old.loc[mask_keep], df_new], ignore_index=True)
-    else:
-        n_removed = 0
-        df_out = pd.concat([df_old, df_new], ignore_index=True)
-
-    df_out.to_csv(_records_path(), index=False)
-    return n_removed, int(len(df_new))
