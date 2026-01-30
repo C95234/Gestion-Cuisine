@@ -67,6 +67,9 @@ def _bg_css(png_path: str) -> str:
 def apply_background(png_file: str) -> None:
     # Must be called AFTER st.set_page_config()
 
+# Logo background
+apply_background(str(Path(__file__).parent / 'logo_background.png'))
+
 # Affiche le logo en fond (doit venir APRÈS st.set_page_config)
 apply_background(str(Path(__file__).parent / 'logo_background.png'))
 
