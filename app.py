@@ -214,6 +214,28 @@ def _temp_out_path(suffix: str) -> str:
 
 
 st.set_page_config(page_title="Gestion cuisine centrale", layout="wide")
+
+# --- Background logo injection ---
+import base64
+from pathlib import Path
+def set_background(png_file):
+    bin_str = Path(png_file).read_bytes()
+    b64 = base64.b64encode(bin_str).decode()
+    page_bg_img = f'''
+    <style>
+    .stApp {{
+        background-image: url("data:image/png;base64,{b64}");
+        background-size: 40%;
+        background-repeat: no-repeat;
+        background-position: center 80px;
+        background-attachment: fixed;
+    }}
+    </style>
+    '''
+    st.markdown(page_bg_img, unsafe_allow_html=True)
+set_background(Path(__file__).parent / "logo_background.png")
+# --- End background injection ---
+
 set_background()
 
 st.title("Gestion cuisine centrale")
