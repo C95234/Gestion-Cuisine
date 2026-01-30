@@ -183,8 +183,8 @@ st.title("Gestion cuisine centrale")
 
 with st.sidebar:
     st.header("Fichiers")
-    planning_file = st.file_uploader("Planning fabrication (.xlsx)", type=["xlsx"])
-    menu_file = st.file_uploader("Menu (.xlsx)", type=["xlsx"])
+    planning_file = st.file_uploader("Planning fabrication (.xlsx)", type=["xlsx","xlsm"])
+    menu_file = st.file_uploader("Menu (.xlsx)", type=["xlsx","xlsm"])
     st.markdown("---")
     st.caption(
         "Conseil : utilise les fichiers d’origine (avec formules) ; l’app récupère les valeurs correctement."
@@ -287,8 +287,8 @@ if not planning_file or not menu_file:
 
 try:
     # ---- Préparation fichiers temporaires (cloud-safe) ----
-    planning_path = _save_uploaded_file(planning_file, suffix=".xlsx")
-    menu_path = _save_uploaded_file(menu_file, suffix=".xlsx")
+    planning_path = _save_uploaded_file(planning_file, suffix=Path(getattr(planning_file, "name", "")).suffix or ".xlsx")
+    menu_path = _save_uploaded_file(menu_file, suffix=Path(getattr(menu_file, "name", "")).suffix or ".xlsx")
 
     # ✅ Parse planning depuis le PATH (plus robuste sur Streamlit Cloud)
     planning = parse_planning_fabrication(planning_path)
@@ -430,7 +430,7 @@ try:
                 "2) Ré-uploade le fichier ici pour générer 1 bon par fournisseur."
             )
             bc_filled = st.file_uploader(
-                "Bon de commande rempli (.xlsx)", type=["xlsx"], key="bc_filled"
+                "Bon de commande rempli (.xlsx)", type=["xlsx","xlsm"], key="bc_filled"
             )
             if bc_filled is not None:
                 try:
@@ -550,7 +550,7 @@ try:
 
         batch_files = st.file_uploader(
             "Plannings fabrication (plusieurs fichiers .xlsx)",
-            type=["xlsx"],
+            type=["xlsx","xlsm"],
             accept_multiple_files=True,
             key="batch_plannings",
         )
@@ -634,7 +634,7 @@ try:
             st.markdown("### 0) Référentiel maître (obligatoire)")
             master_upload = st.file_uploader(
                 "Upload le référentiel maître (.xlsx) (celui que tu fais évoluer semaine après semaine)",
-                type=["xlsx"],
+                type=["xlsx","xlsm"],
                 key="master_upload",
             )
             st.caption(
@@ -644,7 +644,7 @@ try:
             st.markdown("### 1) Apprentissage (à partir d'un classeur allergènes rempli)")
             filled_allergen_wb = st.file_uploader(
                 "Classeur allergènes rempli (ton format, avec des X) — optionnel (pour apprendre)",
-                type=["xlsx"],
+                type=["xlsx","xlsm"],
                 key="all_filled_upload",
             )
 
