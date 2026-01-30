@@ -17,28 +17,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import streamlit as st
-
-# --- Background logo helpers ---
-import base64
-from pathlib import Path
-
-def apply_background(png_file: str):
-    b64 = base64.b64encode(Path(png_file).read_bytes()).decode()
-    css = """
-    <style>
-    [data-testid="stAppViewContainer"], .stApp, .main {
-        background-image: url("data:image/png;base64,B64");
-        background-repeat: no-repeat;
-        background-position: center 90px;
-        background-size: 420px auto;
-        background-attachment: fixed;
-    }
-    header, section.main > div { background: transparent; }
-    </style>
-    """
-    st.markdown(css.replace('B64', b64), unsafe_allow_html=True)
-# --- End background logo helpers ---
-
 import traceback
 import pandas as pd
 import datetime as dt
@@ -184,7 +162,7 @@ def _save_uploaded_file(uploaded, suffix: str) -> str:
     fd, path = tempfile.mkstemp(suffix=suffix)
     os.close(fd)
     with open(path, "wb") as f:
-        f.write(uploaded.getvalue())
+        f.write(uploaded.getbuffer())
     return path
 
 
@@ -199,7 +177,6 @@ def _temp_out_path(suffix: str) -> str:
 
 
 st.set_page_config(page_title="Gestion cuisine centrale", layout="wide")
-apply_background(str(Path(__file__).parent / 'logo_background.png'))
 set_background()
 
 st.title("Gestion cuisine centrale")
