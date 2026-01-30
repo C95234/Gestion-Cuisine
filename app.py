@@ -18,6 +18,27 @@ if str(ROOT) not in sys.path:
 
 import streamlit as st
 
+def _safe_tabs(labels):
+    """Return a list of context managers like st.tabs, with a fallback for older Streamlit."""
+    try:
+        tabs_obj = st.tabs(labels)
+        # Newer Streamlit returns a list of DeltaGenerator
+        if isinstance(tabs_obj, (list, tuple)) and len(tabs_obj) == len(labels):
+            return list(tabs_obj)
+        # Some variants may return a single object; treat as unsupported
+        raise TypeError("st.tabs returned unexpected type")
+    except Exception:
+        choice = st.selectbox("Section", labels, index=0)
+        containers = [st.container() for _ in labels]
+        for lab, cont in zip(labels, containers):
+            if lab != choice:
+                # Hide content by placing it inside an empty container
+                with cont:
+                    st.empty()
+        # We return containers; caller should still use `with tab:` blocks
+        return containers
+
+
 # --- Background logo helpers (no Streamlit call before set_page_config) ---
 import base64
 from pathlib import Path as _Path
@@ -238,7 +259,7 @@ with st.sidebar:
             "Ces listes sont mémorisées (JSON) et utilisées pour les menus déroulants dans le bon de commande."
         )
 
-        ctab1, ctab2, ctab3 = st.tabs(["Coefficients", "Unités", "Fournisseurs"])
+        ctab1, ctab2, ctab3 = _safe_tabs(["Coefficients", "Unités", "Fournisseurs"])
 
         with ctab1:
             dfc = pd.DataFrame(
