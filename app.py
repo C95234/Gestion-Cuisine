@@ -601,15 +601,32 @@ try:
         if records.empty:
             st.warning("Aucune semaine mémorisée pour le moment.")
         else:
+            with st.expander("ℹ️ Comment ça marche / comment corriger une semaine déjà mémorisée", expanded=False):
+                st.markdown(
+                    """
+                    - **1 fichier planning = 1 semaine** : tu uploades un planning, tu choisis le **lundi** de la semaine, puis tu cliques **📌 Mémoriser cette semaine**.
+                    - L'app enregistre des lignes **(date, site, catégorie, quantité)** dans `data/facturation/records.csv`.
+                    - Si tu t'es trompé (effectifs, corrections…), **ré-upload le même planning**, sélectionne **le même lundi**, puis clique à nouveau **📌 Mémoriser cette semaine** :
+                      la semaine est **remplacée** (pas ajoutée en double).
+                    - Le fichier Excel de facturation est maintenant **dynamique** : si tu modifies une quantité dans l'onglet **DONNEES**,
+                      tout le classeur se recalcule (mois + récap) sans repasser par le code.
+                    """
+                )
+
             records = records.copy()
             records["date"] = pd.to_datetime(records["date"]).dt.date
             months = sorted({(d.year, d.month) for d in records["date"]})
             month_labels = [f"{y}-{m:02d}" for (y, m) in months]
             _ = st.multiselect("Mois présents (info)", options=month_labels, default=month_labels)
 
+            years = sorted({y for (y, _) in months})
+            selected_year = years[-1]
+            if len(years) > 1:
+                selected_year = st.selectbox("Année à exporter", options=years, index=len(years) - 1)
+
             if st.button("Générer le classeur Excel de facturation"):
                 out_xlsx = _temp_out_path(".xlsx")
-                export_monthly_workbook(records, out_xlsx)
+                export_monthly_workbook(records, out_xlsx, year=int(selected_year))
 
                 with open(out_xlsx, "rb") as f:
                     st.download_button(
