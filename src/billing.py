@@ -715,3 +715,167 @@ def export_monthly_workbook(
 
     wb.save(out_path)
     return out_path
+
+
+# -----------------------------
+# Excel import (monthly workbook corrected by user)
+# -----------------------------
+
+def _iter_month_sheets(wb: openpyxl.Workbook) -> List[Tuple[int,int,openpyxl.worksheet.worksheet.Worksheet]]:
+    """Yield (year, month, worksheet) for sheets named YYYY-MM."""
+    out = []
+    for ws in wb.worksheets:
+        m = re.match(r"^(\d{4})-(\d{2})$", str(ws.title).strip())
+        if not m:
+            continue
+        y = int(m.group(1))
+        mo = int(m.group(2))
+        out.append((y, mo, ws))
+    out.sort(key=lambda t: (t[0], t[1]))
+    return out
+
+
+def _parse_block(ws, title: str) -> Tuple[dt.date, List[str], List[Tuple[dt.date, str, str, int]]]:
+    """Parse a block ('Repas' or 'Mixé/Lissé') and return rows as (date, site, category, qty)."""
+    # find title in column A
+    start_row = None
+    for r in range(1, ws.max_row + 1):
+        if str(ws.cell(r, 1).value).strip().lower() == title.strip().lower():
+            start_row = r
+            break
+    if start_row is None:
+        return None, [], []
+
+    # Sites on row start_row+1, columns B.. until 'TOTAL'
+    sites = []
+    c = 2
+    while c <= ws.max_column:
+        v = ws.cell(start_row + 1, c).value
+        if v is None:
+            c += 1
+            continue
+        sv = str(v).strip()
+        if sv.upper() == "TOTAL":
+            break
+        sites.append(sv)
+        c += 1
+
+    # Month start date is stored in last column (TOTAL col) on start_row
+    total_col = 2 + len(sites)
+    month_start_val = ws.cell(start_row, total_col).value
+    if isinstance(month_start_val, dt.datetime):
+        month_start = month_start_val.date()
+    elif isinstance(month_start_val, dt.date):
+        month_start = month_start_val
+    else:
+        # fallback from sheet name elsewhere handled by caller
+        month_start = None
+
+    # Daily rows start at start_row+3 until 'TOTAL' in col A
+    rows = []
+    r = start_row + 3
+    while r <= ws.max_row:
+        vday = ws.cell(r, 1).value
+        if vday is None:
+            r += 1
+            continue
+        if str(vday).strip().upper() == "TOTAL":
+            break
+        # day number expected
+        try:
+            day_num = int(vday)
+        except Exception:
+            r += 1
+            continue
+        if month_start is None:
+            r += 1
+            continue
+        d = dt.date(month_start.year, month_start.month, day_num)
+        category = "repas" if title.strip().lower().startswith("repas") else "mixe_lisse"
+        for i, site in enumerate(sites, start=2):
+            qty_val = ws.cell(r, i).value
+            try:
+                qty = int(qty_val) if qty_val is not None else 0
+            except Exception:
+                qty = 0
+            rows.append((d, norm_site_facturation(site), category, qty))
+        r += 1
+    return month_start, sites, rows
+
+
+def import_billing_workbook(
+    in_path: str,
+    *,
+    replace_dates: bool = True,
+) -> Tuple[int, int]:
+    """Import a corrected Facturation.xlsx workbook and update records.csv.
+
+    - Reads sheets named YYYY-MM.
+    - Parses the two blocks: Repas + Mixé/Lissé.
+    - If replace_dates=True: for any imported date, existing records for those dates/categories/sites are removed and replaced.
+    Returns: (n_replaced, n_added)
+    """
+    wb = openpyxl.load_workbook(in_path, data_only=False)
+    imported = []
+
+    for y, m, ws in _iter_month_sheets(wb):
+        # parse both blocks
+        ms1, sites1, rows1 = _parse_block(ws, "Repas")
+        ms2, sites2, rows2 = _parse_block(ws, "Mixé/Lissé")
+
+        # If month_start missing, build from sheet name and re-parse day dates
+        if ms1 is None:
+            # We can still infer month_start
+            month_start = dt.date(y, m, 1)
+            # patch rows dates
+            fixed = []
+            for (d, site, cat, qty) in rows1:
+                fixed.append((dt.date(y, m, d.day), site, cat, qty))
+            rows1 = fixed
+        if ms2 is None:
+            fixed = []
+            for (d, site, cat, qty) in rows2:
+                fixed.append((dt.date(y, m, d.day), site, cat, qty))
+            rows2 = fixed
+
+        imported.extend(rows1)
+        imported.extend(rows2)
+
+    if not imported:
+        return 0, 0
+
+    # Build dataframe
+    df_new = pd.DataFrame(imported, columns=["date","site","category","qty"])
+    df_new["date"] = pd.to_datetime(df_new["date"]).dt.date
+    df_new["qty"] = pd.to_numeric(df_new["qty"], errors="coerce").fillna(0).astype(int)
+    df_new["week_monday"] = df_new["date"].map(lambda d: (d - dt.timedelta(days=d.weekday())))
+    df_new["source"] = "import_facturation"
+
+    # Load existing
+    df_old = load_records()
+    if df_old is None or df_old.empty:
+        df_out = df_new.copy()
+        df_out.to_csv(_records_path(), index=False)
+        return 0, int(len(df_new))
+
+    # Normalize
+    df_old = df_old.copy()
+    df_old["date"] = pd.to_datetime(df_old["date"]).dt.date
+    if "site" in df_old.columns:
+        df_old["site"] = df_old["site"].map(norm_site_facturation)
+    if "category" in df_old.columns:
+        df_old["category"] = df_old["category"].astype(str)
+    df_old["qty"] = pd.to_numeric(df_old["qty"], errors="coerce").fillna(0).astype(int)
+
+    # Replace dates present in import
+    if replace_dates:
+        key_dates = set(df_new["date"].unique().tolist())
+        mask_keep = ~df_old["date"].isin(key_dates)
+        n_removed = int((~mask_keep).sum())
+        df_out = pd.concat([df_old.loc[mask_keep], df_new], ignore_index=True)
+    else:
+        n_removed = 0
+        df_out = pd.concat([df_old, df_new], ignore_index=True)
+
+    df_out.to_csv(_records_path(), index=False)
+    return n_removed, int(len(df_new))

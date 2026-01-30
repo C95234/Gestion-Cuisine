@@ -103,7 +103,6 @@ mixe_lisse_to_daily_totals = billing.mixe_lisse_to_daily_totals
 save_week = billing.save_week
 load_records = billing.load_records
 export_monthly_workbook = billing.export_monthly_workbook
-import_billing_workbook = getattr(billing, "import_billing_workbook", None)
 
 # allergènes
 learn_from_filled_allergen_workbook = learner.learn_from_filled_allergen_workbook
@@ -619,35 +618,6 @@ try:
                         file_name="Facturation.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
-
-            st.divider()
-            st.markdown("### Import facturation (après corrections)")
-            st.caption(
-                "Tu peux corriger les effectifs directement dans le classeur Facturation.xlsx, puis le renvoyer ici. "
-                "Les dates présentes dans le fichier remplaceront celles mémorisées par l'application."
-            )
-
-            billing_upload = st.file_uploader(
-                "Classeur Facturation.xlsx corrigé",
-                type=["xlsx"],
-                key="billing_import_upload",
-            )
-
-            if st.button("Importer ce classeur corrigé", key="billing_import_btn"):
-                if import_billing_workbook is None:
-                    st.error("Fonction d'import indisponible (mise à jour requise).")
-                elif not billing_upload:
-                    st.error("Upload d'abord le classeur Facturation.xlsx corrigé.")
-                else:
-                    try:
-                        tmp_bill = _save_uploaded_file(billing_upload, suffix=".xlsx")
-                        n_r, n_m = import_billing_workbook(tmp_bill, replace_dates=True)
-                        st.success(
-                            f"Import terminé : {n_r} lignes repas + {n_m} lignes mixé/lissé importées (jour/site)."
-                        )
-                    except Exception as e:
-                        st.error("Erreur pendant l'import du classeur de facturation.")
-                        st.exception(e)
 
     with tab_all:
         st.subheader("Tableaux allergènes (format EXACT)")
