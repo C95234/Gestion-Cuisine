@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Dict, List, Tuple, Optional
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -20,7 +21,6 @@ import pytesseract
 # Sur Streamlit Cloud, tesseract est à /usr/bin/tesseract si tu as packages.txt
 # En local Windows/Mac, ça dépend (PATH). On ne force QUE si le chemin existe.
 try:
-    import os
     if os.path.exists("/usr/bin/tesseract"):
         pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 except Exception:
@@ -29,7 +29,15 @@ except Exception:
 
 # --- Configuration modèle économat (colonnes sites) ---
 SITE_COL_NAMES = [
-    "FAM TL", "Bussière", "Bruyères", "FO", "MAS", "ESAT", "FM", "René Lalouette", "Internat"
+    "FAM TL",
+    "Bussière",
+    "Bruyères",
+    "FO",
+    "MAS",
+    "ESAT",
+    "FM",
+    "René Lalouette",
+    "Internat",
 ]
 
 # Quelques normalisations de libellés (tu peux enrichir)
@@ -50,8 +58,18 @@ ALIASES = {
     "sucre en poudre (sachets)": "Sucre",
 }
 
-# Stop-words / bruit OCR (à éviter comme "produit")
-BAD_TOKENS = {"quantité", "livré", "reçu", "commandé", "commande", "total", "produit", "unité", "prix"}
+# Stop-words / bruit OCR
+BAD_TOKENS = {
+    "quantité",
+    "livré",
+    "reçu",
+    "commandé",
+    "commande",
+    "total",
+    "produit",
+    "unité",
+    "prix",
+}
 
 
 @dataclass
@@ -60,6 +78,30 @@ class ParsedOrder:
     site: Optional[str]
     # liste (produit_normalisé, quantité_commandée)
     items: List[Tuple[str, float]]
+
+
+# ----------------- Utilitaire lecture fichier (UploadedFile OU chemin str) -----------------
+
+def _read_any_file(f) -> Tuple[str, bytes]:
+    """
+    Accepte:
+    - UploadedFile Streamlit (read + name)
+    - chemin str vers un fichier
+    - file-like (read) sans name
+    Retour: (filename, bytes)
+    """
+    # Cas: chemin string
+    if isinstance(f, str):
+        filename = os.path.basename(f)
+        with open(f, "rb") as fh:
+            return filename, fh.read()
+
+    # Cas: UploadedFile / file-like
+    filename = getattr(f, "name", "bon")
+    if hasattr(f, "read"):
+        return filename, f.read()
+
+    raise TypeError(f"Type de fichier non supporté: {type(f)}")
 
 
 # ----------------- Détection site -----------------
@@ -75,7 +117,6 @@ def _detect_site_from_text(text: str, filename: str = "") -> Optional[str]:
     if "24t" in t or "24 ter" in t or "internat" in t:
         return "Internat"
 
-    # si tu as d’autres structures à détecter, ajoute-les ici
     return None
 
 
@@ -87,13 +128,10 @@ def _normalize_product_name(raw: str) -> str:
 
     low = s.lower()
 
-    # alias directs
     for k, v in ALIASES.items():
         if k in low:
             return v
 
-    # cas particuliers simples
-    # ex: "Lait 1/2 ecreme" -> "Lait 1/2 écrémé"
     if "lait" in low and ("1/2" in low or "demi" in low):
         return "Lait 1/2 écrémé"
 
@@ -125,11 +163,10 @@ def _parse_items_from_ocr_text(text: str) -> List[Tuple[str, float]]:
     """
     Heuristique OCR:
     On cherche des lignes type: "<libellé>  <qte commandée>"
-    (on ignore qté reçue)
+    On prend le PREMIER nombre rencontré = quantité commandée.
     """
     items: List[Tuple[str, float]] = []
 
-    # split lignes
     for line in (text or "").splitlines():
         l = line.strip()
         if not l:
@@ -139,8 +176,7 @@ def _parse_items_from_ocr_text(text: str) -> List[Tuple[str, float]]:
         if any(tok in low for tok in BAD_TOKENS):
             continue
 
-        # Exemple OCR fréquent: "Beurre 30 30" ou "Jus de pomme 5"
-        # On prend le PREMIER nombre comme quantité commandée.
+        # Prend 1er nombre comme quantité commandée
         m = re.match(r"^(.*?)(\d+(?:[.,]\d+)?)", l)
         if not m:
             continue
@@ -164,24 +200,20 @@ def _parse_items_from_ocr_text(text: str) -> List[Tuple[str, float]]:
 # ----------------- Parsing Excel (.xls/.xlsx) -----------------
 
 def _parse_excel(file_bytes: bytes, filename: str) -> ParsedOrder:
-    # pandas gère .xls/.xlsx selon engines installés (xlrd pour xls)
     bio = io.BytesIO(file_bytes)
     df = pd.read_excel(bio)
 
-    # site: on tente sur entête + nom de fichier
     header_text = " ".join([str(c) for c in df.columns])
     site = _detect_site_from_text(header_text, filename)
 
     items: List[Tuple[str, float]] = []
 
-    # Heuristique: colonnes possibles "Produit" / "Désignation" / etc.
     col_prod = None
     for cand in ["Produit", "Désignation", "Designation", "Article", "Libellé", "Libelle"]:
         if cand in df.columns:
             col_prod = cand
             break
 
-    # colonnes quantité possibles
     col_qty = None
     for cand in ["Qté", "Qte", "Quantité", "Quantite", "Commande", "Commandé", "Commandee"]:
         if cand in df.columns:
@@ -201,8 +233,7 @@ def _parse_excel(file_bytes: bytes, filename: str) -> ParsedOrder:
                 continue
             items.append((_normalize_product_name(prod_raw), qty))
     else:
-        # fallback: si le fichier "Détail Déj-gouter" est sous forme colonnes produits + valeurs
-        # => on somme les colonnes numériques
+        # fallback colonnes produits -> valeurs numériques
         for c in df.columns:
             if isinstance(c, str) and c.strip():
                 s = df[c]
@@ -218,11 +249,10 @@ def _parse_excel(file_bytes: bytes, filename: str) -> ParsedOrder:
 
 def parse_pdj_order_file(uploaded_file) -> ParsedOrder:
     """
-    Fonction attendue par ton app.py
-    uploaded_file = objet Streamlit (a .name + .read()) ou file-like.
+    Fonction attendue par ton app.py.
+    Accepte UploadedFile Streamlit OU chemin str.
     """
-    name = getattr(uploaded_file, "name", "bon")
-    file_bytes = uploaded_file.read()
+    name, file_bytes = _read_any_file(uploaded_file)
 
     if name.lower().endswith(".pdf"):
         text = _ocr_text_from_pdf_bytes(file_bytes)
@@ -233,7 +263,6 @@ def parse_pdj_order_file(uploaded_file) -> ParsedOrder:
     if name.lower().endswith((".xls", ".xlsx", ".xlsm")):
         return _parse_excel(file_bytes, name)
 
-    # type non supporté
     return ParsedOrder(filename=name, site=None, items=[])
 
 
@@ -244,21 +273,22 @@ def update_facturation_economat(
 ) -> bytes:
     """
     Fonction attendue par ton app.py.
-    - modele_xlsx: file-like Streamlit uploader (xlsx) OU chemin.
-    - order_files: liste de fichiers uploadés (pdf/xls/xlsx)
+    - modele_xlsx: UploadedFile Streamlit (xlsx) OU chemin str
+    - order_files: liste de fichiers uploadés (pdf/xls/xlsx) OU chemins str
     - mois: 'YYYY-MM' optionnel
     Retour: bytes du fichier xlsx généré (pour st.download_button)
     """
-    # 1) Charger modèle en openpyxl (pour conserver styles / formules existantes)
-    if hasattr(modele_xlsx, "read"):
-        model_bytes = modele_xlsx.read()
-        wb = load_workbook(io.BytesIO(model_bytes))
-    else:
+
+    # 1) Charger modèle en openpyxl (conserver styles)
+    if isinstance(modele_xlsx, str):
         wb = load_workbook(modele_xlsx)
+    else:
+        _, model_bytes = _read_any_file(modele_xlsx)
+        wb = load_workbook(io.BytesIO(model_bytes))
 
-    ws = wb.active  # ton modèle a 1 feuille principale
+    ws = wb.active
 
-    # 2) Trouver ligne d’en-tête (celle qui contient "Produit")
+    # 2) Trouver ligne en-tête (celle qui contient "Produit")
     header_row = None
     for r in range(1, 50):
         v = ws.cell(r, 1).value
@@ -266,12 +296,9 @@ def update_facturation_economat(
             header_row = r
             break
     if header_row is None:
-        # fallback: souvent "Produit" est en A4
         header_row = 4
 
     # 3) Identifier colonnes
-    # Colonnes attendues: A Produit, B Unité, C Prix, puis sites, puis Total produit (€)
-    # On repère les sites par leur nom sur la ligne header_row
     col_by_name: Dict[str, int] = {}
     max_col = ws.max_column
     for c in range(1, max_col + 1):
@@ -279,7 +306,6 @@ def update_facturation_economat(
         if isinstance(val, str):
             col_by_name[val.strip()] = c
 
-    # prix unitaire
     col_prix = col_by_name.get("Prix unitaire (€)", 3)
     col_produit = col_by_name.get("Produit", 1)
 
@@ -288,17 +314,14 @@ def update_facturation_economat(
         if s in col_by_name:
             site_cols[s] = col_by_name[s]
 
-    # total produit
     col_total_produit = col_by_name.get("Total produit (€)")
     if not col_total_produit:
-        # souvent la dernière colonne
         col_total_produit = ws.max_column
 
-    # 4) Construire dictionnaire produit -> ligne
+    # 4) Dictionnaire produit -> ligne
     product_row: Dict[str, int] = {}
     first_data_row = header_row + 1
 
-    # repérer la ligne "TOTAL SITE (mensuel)" pour ne pas écrire dessous
     total_site_row = None
     for r in range(first_data_row, ws.max_row + 1):
         v = ws.cell(r, col_produit).value
@@ -316,7 +339,6 @@ def update_facturation_economat(
     # 5) Parser tous les bons + agréger (site, produit) = somme
     parsed: List[ParsedOrder] = [parse_pdj_order_file(f) for f in order_files]
 
-    # afficher “quel bon -> quel site” dans l’app : ton app le fait déjà normalement
     agg: Dict[Tuple[str, str], float] = {}
     for po in parsed:
         if not po.site:
@@ -327,28 +349,22 @@ def update_facturation_economat(
             key = (po.site, prod)
             agg[key] = agg.get(key, 0.0) + float(qty)
 
-    # 6) Écrire les quantités dans le tableau
-    # On utilise le matching souple : si produit normalisé match exact dans modèle (case-insensitive).
     def find_row_for_product(prod_name: str) -> Optional[int]:
         low = prod_name.strip().lower()
         if low in product_row:
             return product_row[low]
-        # fallback: contient
-        for k, r in product_row.items():
-            if low == k:
-                return r
         for k, r in product_row.items():
             if low in k or k in low:
                 return r
         return None
 
+    # 6) Écrire les quantités (valeurs)
     for (site, prod), qty in agg.items():
         if site not in site_cols:
             continue
         r = find_row_for_product(_normalize_product_name(prod))
         if not r:
-            # produit non trouvé -> on ignore ici (pas d’ajout de lignes pour ne pas casser le modèle)
-            # tu peux faire un onglet "Non reconnus" si besoin, mais on reste minimal.
+            # produit non trouvé => ignoré (pour ne pas casser le modèle)
             continue
         c = site_cols[site]
         cur = ws.cell(r, c).value
@@ -358,9 +374,8 @@ def update_facturation_economat(
             cur_num = 0.0
         ws.cell(r, c).value = cur_num + qty
 
-    # 7) Mettre le mois si demandé (cellule B2 souvent)
+    # 7) Écrire le mois si demandé
     if mois:
-        # On cherche une cellule contenant "Mois (YYYY-MM)" et on écrit à droite
         for r in range(1, 15):
             for c in range(1, 6):
                 v = ws.cell(r, c).value
@@ -368,33 +383,35 @@ def update_facturation_economat(
                     ws.cell(r, c + 1).value = mois
                     break
 
-    # 8) Réécrire les formules de totaux (pour que ce soit modifiable)
-    # Total produit (€) = Prix * SOMME(sites)
-    # On ne touche pas aux prix ; on force la formule sur chaque ligne produit.
+    # 8) Formules totaux (modifiable)
     site_col_indices = [site_cols[s] for s in SITE_COL_NAMES if s in site_cols]
     if site_col_indices:
         first_site_col = min(site_col_indices)
         last_site_col = max(site_col_indices)
 
         for r in range(first_data_row, last_product_row + 1):
-            # si la ligne a un produit
             v = ws.cell(r, col_produit).value
             if not isinstance(v, str) or not v.strip():
                 continue
-            # formule
             prix_cell = f"{get_column_letter(col_prix)}{r}"
-            sum_range = f"{get_column_letter(first_site_col)}{r}:{get_column_letter(last_site_col)}{r}"
+            sum_range = (
+                f"{get_column_letter(first_site_col)}{r}:{get_column_letter(last_site_col)}{r}"
+            )
             ws.cell(r, col_total_produit).value = f"={prix_cell}*SUM({sum_range})"
 
-        # TOTAL SITE (mensuel) : sommeprod(prix, qty_site)
         if total_site_row:
-            prix_range = f"{get_column_letter(col_prix)}{first_data_row}:{get_column_letter(col_prix)}{last_product_row}"
+            prix_range = (
+                f"{get_column_letter(col_prix)}{first_data_row}:{get_column_letter(col_prix)}{last_product_row}"
+            )
             for s, c in site_cols.items():
-                qty_range = f"{get_column_letter(c)}{first_data_row}:{get_column_letter(c)}{last_product_row}"
+                qty_range = (
+                    f"{get_column_letter(c)}{first_data_row}:{get_column_letter(c)}{last_product_row}"
+                )
                 ws.cell(total_site_row, c).value = f"=SUMPRODUCT({prix_range},{qty_range})"
 
-            # total global = somme colonne Total produit
-            total_range = f"{get_column_letter(col_total_produit)}{first_data_row}:{get_column_letter(col_total_produit)}{last_product_row}"
+            total_range = (
+                f"{get_column_letter(col_total_produit)}{first_data_row}:{get_column_letter(col_total_produit)}{last_product_row}"
+            )
             ws.cell(total_site_row, col_total_produit).value = f"=SUM({total_range})"
 
     # 9) Retour bytes
