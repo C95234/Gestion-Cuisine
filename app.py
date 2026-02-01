@@ -659,7 +659,7 @@ try:
                     st.code(repr(e))
 
         # -------------------------------------------------
-        # Facturation PDJ (Economat)
+        # Facturation PDJ (Economat) — version corrigée
         # -------------------------------------------------
         st.divider()
         st.markdown("### Facturation PDJ (économat)")
@@ -685,6 +685,10 @@ try:
             key="pdj_month",
         )
 
+        def _valid_yyyymm(s: str) -> bool:
+            s = (s or "").strip()
+            return bool(re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", s))
+
         if st.button("Générer Facturation économat (PDJ)", key="gen_economat_pdj", type="primary"):
             if not economat_tpl:
                 st.error("Ajoute d'abord le fichier 'Facturation économat' (.xlsx).")
@@ -692,63 +696,30 @@ try:
                 st.error("Ajoute au moins 1 bon de commande PDJ (PDF/Excel).")
             else:
                 try:
-                    all_lines = []
-                    months = []
-                    detected = []  # (filename, site)
-
-                    def _infer_site_from_filename(name: str) -> str:
-                        n = (name or "").lower()
-                        if "lautrec" in n or n.startswith("mas") or " mas" in n:
-                            return "MAS"
-                        if "internat" in n or "24" in n or "24t" in n or "24 ter" in n or "24ter" in n:
-                            return "Internat"
-                        return ""
-
-                    def _valid_yyyymm(s: str) -> bool:
-                        s = (s or "").strip()
-                        return bool(re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", s))
-
                     if force_month.strip() and not _valid_yyyymm(force_month.strip()):
                         st.error("Le mois doit être au format YYYY-MM (ex: 2026-01).")
                         st.stop()
 
-                    for up in pdj_files:
-                        tmp = _save_uploaded_file(up, suffix=Path(getattr(up, "name", "")).suffix or ".pdf")
-                        _site, lines, m = parse_pdj_order_file(tmp)
+                    # ✅ IMPORTANT : on passe les UploadedFile Streamlit directement
+                    # (pas de chemins temporaires), pour éviter 'str'.read()
+                    output_bytes = update_facturation_economat(
+                        modele_xlsx=economat_tpl,
+                        order_files=pdj_files,
+                        mois=(force_month.strip() or None),
+                    )
 
-                        # Si le site n'a pas été trouvé dans le document, on tente le nom de fichier.
-                        if not (_site or "").strip():
-                            _site = _infer_site_from_filename(getattr(up, "name", ""))
-                            # et on applique au moins au site des lignes
-                            if _site:
-                                for ln in lines:
-                                    ln.site = _site
+                    st.success("Facturation économat (PDJ) générée.")
+                    st.download_button(
+                        "Télécharger Facturation_economat_PDJ.xlsx",
+                        data=output_bytes,
+                        file_name="Facturation_economat_PDJ.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
 
-                        detected.append((getattr(up, "name", "(fichier)"), _site or "(non détecté)"))
-                        all_lines.extend(lines)
-                        if m:
-                            months.append(m)
-
-                    # Affiche la correspondance fichier -> site détecté
-                    if detected:
-                        st.markdown("**Site détecté par bon de commande :**")
-                        for fn, st_site in detected:
-                            st.write(f"- {fn} → {st_site}")
-                    # Mois choisi : priorité à la saisie utilisateur, sinon premier mois détecté
-                    fm = force_month.strip() or (months[0] if months else None)
-                    tpl_path = _save_uploaded_file(economat_tpl, suffix=".xlsx")
-                    out_path = update_facturation_economat(tpl_path, all_lines, force_month=fm)
-
-                    with open(out_path, "rb") as f:
-                        st.download_button(
-                            "Télécharger Facturation_economat_PDJ.xlsx",
-                            data=f,
-                            file_name="Facturation_economat_PDJ.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        )
                 except Exception as e:
                     st.error("Impossible de générer la facturation économat (PDJ).")
-                    st.code(repr(e))
+                    st.exception(e)
+
 
     with tab_all:
         st.subheader("Tableaux allergènes (format EXACT)")
