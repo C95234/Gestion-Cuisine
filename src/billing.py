@@ -242,7 +242,11 @@ DEFAULT_UNIT_PRICES = {
 
 def _unit_price(category: str, site: str, custom_prices: Optional[dict] = None) -> float:
     prices = (custom_prices or DEFAULT_UNIT_PRICES).get(category, {})
+    # Normalisation légère du nom de site pour éviter les écarts de libellés
+    # (ex: "La MAS", "MAS ", "Mas", "MAS - ...").
     s = (site or "").strip().upper()
+    if "MAS" in s:
+        s = "MAS"
     return float(prices.get(s, prices.get("__default__", 0.0)))
 
 
