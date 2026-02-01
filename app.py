@@ -103,6 +103,7 @@ mixe_lisse_to_daily_totals = billing.mixe_lisse_to_daily_totals
 save_week = billing.save_week
 load_records = billing.load_records
 export_monthly_workbook = billing.export_monthly_workbook
+apply_corrected_monthly_workbook = billing.apply_corrected_monthly_workbook
 
 # allergènes
 learn_from_filled_allergen_workbook = learner.learn_from_filled_allergen_workbook
@@ -618,6 +619,35 @@ try:
                         file_name="Facturation.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
+
+        st.divider()
+        st.markdown("### Importer une facturation corrigée (retour comptable)")
+        st.caption(
+            "Si le fichier Facturation.xlsx est corrigé (quantités modifiées), tu peux le réimporter ici. "
+            "L'app mettra à jour sa mémoire (records.csv) pour les mois présents dans le fichier."
+        )
+        corrected_xlsx = st.file_uploader(
+            "Facturation corrigée (.xlsx)",
+            type=["xlsx","xlsm"],
+            key="factu_corrected",
+        )
+        if st.button("✅ Appliquer les corrections", key="apply_factu_corrections"):
+            if not corrected_xlsx:
+                st.error("Upload d'abord un fichier Facturation.xlsx corrigé.")
+            else:
+                tmp_corr = _save_uploaded_file(corrected_xlsx, suffix=".xlsx")
+                try:
+                    n_removed, n_added = apply_corrected_monthly_workbook(tmp_corr)
+                    if n_removed == 0 and n_added == 0:
+                        st.warning("Aucune donnée importable détectée dans ce fichier (vérifie qu'il vient bien de l'app).")
+                    else:
+                        st.success(
+                            f"Corrections appliquées : {n_removed} ligne(s) remplacée(s) / supprimée(s), "
+                            f"{n_added} ligne(s) importée(s)."
+                        )
+                except Exception as e:
+                    st.error("Impossible d'importer ce fichier. Il doit provenir de l'export de l'app.")
+                    st.code(repr(e))
 
     with tab_all:
         st.subheader("Tableaux allergènes (format EXACT)")
