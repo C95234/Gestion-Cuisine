@@ -29,6 +29,7 @@ Le modèle peut évoluer (produits/prix). Le code :
 """
 
 import datetime as dt
+import difflib
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -156,11 +157,11 @@ def explode_composite_quantities(product: str, qty_cell: str) -> List[Tuple[str,
             n = float(m.group(1).replace(",", "."))
             fruit = m.group(2)
             if "pomm" in fruit:
-                out.append(("Jus de pomme", n))
+                out.append(("Jus Pomme", n))
             elif "orang" in fruit:
-                out.append(("Jus d'orange", n))
+                out.append(("Jus Orange", n))
             elif "raisin" in fruit:
-                out.append(("Jus de raisin", n))
+                out.append(("Jus Raisin", n))
         if out:
             return out
 
@@ -537,15 +538,95 @@ def _append_product_row(ws, header_row: int, product: str) -> int:
     return new_r
 
 
+# -----------------------------
+# Mapping produit & correction totaux
+# -----------------------------
+
+def _normalize_product_key(s: str) -> str:
+    return norm_text(s)
+
+
+# Alias "entrée bon" -> libellé du modèle économat
+# (facile à ajuster si les libellés changent)
+_PRODUCT_ALIASES = {
+    _normalize_product_key("Yaourt Nature"): _normalize_product_key("Yaourt"),
+    _normalize_product_key("Lait demi - écrémé"): _normalize_product_key("Lait 1/2 écrémé"),
+    _normalize_product_key("Lait demi-écrémé"): _normalize_product_key("Lait 1/2 écrémé"),
+    _normalize_product_key("Jus de pomme"): _normalize_product_key("Jus Pomme"),
+    _normalize_product_key("Jus d'orange"): _normalize_product_key("Jus Orange"),
+    _normalize_product_key("Jus de raisin"): _normalize_product_key("Jus Raisin"),
+    _normalize_product_key("Sucre en poudre (sachets)"): _normalize_product_key("Sucre"),
+    _normalize_product_key("Compotes pruneaux"): _normalize_product_key("Compotes"),
+    _normalize_product_key("Tablettes chocolat"): _normalize_product_key("Chocolat"),
+    _normalize_product_key("Nesquick"): _normalize_product_key("Chocolat"),
+    _normalize_product_key("Beurre"): _normalize_product_key("Micro-beurres"),
+    _normalize_product_key("Biscotte"): _normalize_product_key("Pain de mie complet"),
+}
+
+
+def _best_fuzzy_match(key: str, candidates: List[str]) -> Optional[str]:
+    if not candidates:
+        return None
+    best = None
+    best_score = 0.0
+    for c in candidates:
+        score = difflib.SequenceMatcher(None, key, c).ratio()
+        if score > best_score:
+            best_score = score
+            best = c
+    return best if best_score >= 0.78 else None
+
+
+def _resolve_product_row(prod_key: str, prod_rows: Dict[str, int]) -> Optional[int]:
+    # 1) match exact
+    if prod_key in prod_rows:
+        return prod_rows[prod_key]
+    # 2) alias
+    alias = _PRODUCT_ALIASES.get(prod_key)
+    if alias and alias in prod_rows:
+        return prod_rows[alias]
+    # 3) fuzzy
+    fuzzy = _best_fuzzy_match(prod_key, list(prod_rows.keys()))
+    if fuzzy and fuzzy in prod_rows:
+        return prod_rows[fuzzy]
+    return None
+
+
+def _ensure_totals_row_formulas(ws, header_row: int, site_cols: Dict[str, int], *, first_product_row: int, last_product_row: int) -> None:
+    """Corrige les formules de la ligne 'TOTAL SITE (mensuel)' (le modèle fourni contient des #REF!)."""
+    total_row = None
+    for r in range(header_row + 1, ws.max_row + 1):
+        v = ws.cell(r, 1).value
+        if v and "total site" in norm_text(v):
+            total_row = r
+            break
+    if total_row is None:
+        return
+
+    price_col = 3  # C
+    price_letter = openpyxl.utils.get_column_letter(price_col)
+
+    for _, col in site_cols.items():
+        col_letter = openpyxl.utils.get_column_letter(col)
+        ws.cell(total_row, col).value = (
+            f"=SUMPRODUCT(${price_letter}${first_product_row}:${price_letter}${last_product_row},"
+            f"{col_letter}{first_product_row}:{col_letter}{last_product_row})"
+        )
+
+    ws.cell(total_row, 13).value = f"=SUM(M{first_product_row}:M{last_product_row})"
+
 def update_facturation_economat(
     economat_xlsx_path: str,
     pdj_lines: Iterable[PDJLine],
     *,
     force_month: Optional[str] = None,
 ) -> str:
-    """Applique les lignes PDJ au fichier économat.
+    """Applique les lignes PDJ au fichier économat (sans casser le modèle).
 
-    Retourne un chemin vers un fichier de sortie temporaire.
+    - Remplit uniquement les cellules "quantité" (colonnes sites)
+    - Ne crée pas de nouvelles lignes dans le tableau principal : si un produit n'est
+      pas reconnu, il est listé dans un onglet "Non reconnus".
+    - Corrige la ligne 'TOTAL SITE (mensuel)' si le modèle contient des formules #REF!.
     """
     wb = openpyxl.load_workbook(economat_xlsx_path)
     ws = wb[wb.sheetnames[0]]
@@ -561,26 +642,36 @@ def update_facturation_economat(
         except Exception:
             pass
 
-    # Accumulation
+    # Détermine le bloc produit (entre l'en-tête et la ligne TOTAL SITE)
+    first_product_row = header_row + 1
+    last_product_row = ws.max_row
+    for r in range(ws.max_row, header_row, -1):
+        v = ws.cell(r, 1).value
+        if v and "total site" in norm_text(v):
+            last_product_row = r - 1
+            break
+
+    unknown: List[PDJLine] = []
+
     for ln in pdj_lines:
         if not ln.product or ln.qty is None:
             continue
+
         prod_key = norm_text(ln.product)
-        row = prod_rows.get(prod_key)
-        if row is None:
-            row = _append_product_row(ws, header_row, ln.product)
-            prod_rows[prod_key] = row
+        row = _resolve_product_row(prod_key, prod_rows)
+        if row is None or row < first_product_row or row > last_product_row:
+            unknown.append(ln)
+            continue
 
         site = normalize_site_for_economat(ln.site)
         col = site_cols.get(norm_text(site))
         if col is None:
-            # Site inconnu dans le modèle : on ignore proprement
+            unknown.append(ln)
             continue
 
         cell = ws.cell(row, col)
-        old = cell.value
         try:
-            old_num = float(old) if old not in (None, "") else 0.0
+            old_num = float(cell.value) if cell.value not in (None, "") else 0.0
         except Exception:
             old_num = 0.0
         cell.value = old_num + float(ln.qty)
@@ -589,7 +680,23 @@ def update_facturation_economat(
         if ln.unit_price is not None:
             ws.cell(row, 3).value = float(ln.unit_price)
 
-    # Sauvegarde
+    _ensure_totals_row_formulas(
+        ws,
+        header_row,
+        site_cols,
+        first_product_row=first_product_row,
+        last_product_row=last_product_row,
+    )
+
+    if unknown:
+        if "Non reconnus" in wb.sheetnames:
+            unk_ws = wb["Non reconnus"]
+            wb.remove(unk_ws)
+        unk_ws = wb.create_sheet("Non reconnus")
+        unk_ws.append(["Site", "Produit", "Quantité", "Prix unitaire"])
+        for u in unknown:
+            unk_ws.append([u.site, u.product, u.qty, u.unit_price])
+
     out_path = str(Path(economat_xlsx_path).with_name("Facturation_economat_PDJ.xlsx"))
     wb.save(out_path)
     return out_path
