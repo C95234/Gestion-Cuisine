@@ -734,7 +734,6 @@ try:
                         st.markdown("**Site détecté par bon de commande :**")
                         for fn, st_site in detected:
                             st.write(f"- {fn} → {st_site}")
-
                     # Mois choisi : priorité à la saisie utilisateur, sinon premier mois détecté
                     fm = force_month.strip() or (months[0] if months else None)
                     tpl_path = _save_uploaded_file(economat_tpl, suffix=".xlsx")
