@@ -43,10 +43,33 @@ import openpyxl
 
 
 def _lazy_import_ocr():
-    """Importe les libs OCR uniquement si nécessaires."""
-    from pdf2image import convert_from_path  # type: ignore
+    """Importe les libs OCR uniquement si nécessaires.
+
+    IMPORTANT : on n'utilise pas pdf2image/poppler, car beaucoup de postes
+    (Windows notamment) n'ont pas Poppler installé, ce qui provoque
+    PDFInfoNotInstalledError.
+
+    À la place, on rend les pages PDF en images via PyMuPDF (fitz), qui est
+    une dépendance Python pure (pas d'outil système à installer).
+    """
     import pytesseract  # type: ignore
-    return convert_from_path, pytesseract
+    return pytesseract
+
+
+def _pdf_to_images(path: str, dpi: int = 220):
+    """Rend un PDF en liste d'images PIL via PyMuPDF (sans Poppler)."""
+    import fitz  # type: ignore
+    from PIL import Image  # type: ignore
+
+    doc = fitz.open(path)
+    images = []
+    zoom = dpi / 72.0
+    mat = fitz.Matrix(zoom, zoom)
+    for page in doc:
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        images.append(img)
+    return images
 
 
 # -----------------------------
@@ -287,7 +310,7 @@ def _parse_date_ddmmyy(text: str) -> Optional[dt.date]:
 
 def parse_pdj_pdf(path: str) -> Tuple[str, List[PDJLine], Optional[str]]:
     """Parse un bon PDJ scanné (1 ou plusieurs pages)."""
-    convert_from_path, pytesseract = _lazy_import_ocr()
+    pytesseract = _lazy_import_ocr()
 
     # OpenCV (cv2) est pratique pour isoler l'encre (souvent bleue) sur des formulaires scannés.
     # MAIS on ne doit pas dépendre d'OpenCV : certaines installations (notamment Streamlit Cloud,
@@ -299,7 +322,7 @@ def parse_pdj_pdf(path: str) -> Tuple[str, List[PDJLine], Optional[str]]:
         cv2 = None  # type: ignore
     import numpy as np  # type: ignore
 
-    imgs = convert_from_path(path, dpi=220)
+    imgs = _pdf_to_images(path, dpi=220)
     all_lines: List[PDJLine] = []
     month: Optional[str] = None
     site_final = ""
