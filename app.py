@@ -62,6 +62,10 @@ def _import_or_stop():
         billing = importlib.import_module("src.billing")
         importlib.reload(billing)
 
+        # Import Facturation PDJ
+        pdj_factu = importlib.import_module("src.pdj_facturation")
+        importlib.reload(pdj_factu)
+
         # Import allergènes
         learner = importlib.import_module("src.allergens.learner")
         importlib.reload(learner)
@@ -69,7 +73,7 @@ def _import_or_stop():
         generator = importlib.import_module("src.allergens.generator")
         importlib.reload(generator)
 
-        return processor, cs, order_forms, billing, learner, generator
+        return processor, cs, order_forms, billing, pdj_factu, learner, generator
 
     except Exception as e:
         st.error("💥 Erreur lors d’un import (module src.*)")
@@ -78,7 +82,7 @@ def _import_or_stop():
         st.stop()
 
 
-processor, cs, order_forms, billing, learner, generator = _import_or_stop()
+processor, cs, order_forms, billing, pdj_factu, learner, generator = _import_or_stop()
 
 # Exports processor
 parse_planning_fabrication = processor.parse_planning_fabrication
@@ -104,6 +108,10 @@ save_week = billing.save_week
 load_records = billing.load_records
 export_monthly_workbook = billing.export_monthly_workbook
 apply_corrected_monthly_workbook = billing.apply_corrected_monthly_workbook
+
+# Facturation PDJ
+parse_pdj_order_file = pdj_factu.parse_pdj_order_file
+update_facturation_economat = pdj_factu.update_facturation_economat
 
 # allergènes
 learn_from_filled_allergen_workbook = learner.learn_from_filled_allergen_workbook
@@ -647,6 +655,65 @@ try:
                         )
                 except Exception as e:
                     st.error("Impossible d'importer ce fichier. Il doit provenir de l'export de l'app.")
+                    st.code(repr(e))
+
+        # -------------------------------------------------
+        # Facturation PDJ (Economat)
+        # -------------------------------------------------
+        st.divider()
+        st.markdown("### Facturation PDJ (économat)")
+        st.caption(
+            "Ajoute un ou plusieurs bons de commande (PDF scanné ou Excel) : l'app remplit automatiquement le fichier "
+            "de facturation économat (quantités par site + produit)."
+        )
+
+        economat_tpl = st.file_uploader(
+            "Modèle 'Facturation économat' (.xlsx)",
+            type=["xlsx"],
+            key="economat_template",
+        )
+        pdj_files = st.file_uploader(
+            "Bons de commande PDJ (PDF/Excel) — plusieurs fichiers",
+            type=["pdf", "xls", "xlsx", "xlsm"],
+            accept_multiple_files=True,
+            key="pdj_orders",
+        )
+        force_month = st.text_input(
+            "Mois à écrire dans le modèle (optionnel, format YYYY-MM)",
+            value="",
+            key="pdj_month",
+        )
+
+        if st.button("Générer Facturation économat (PDJ)", key="gen_economat_pdj", type="primary"):
+            if not economat_tpl:
+                st.error("Ajoute d'abord le fichier 'Facturation économat' (.xlsx).")
+            elif not pdj_files:
+                st.error("Ajoute au moins 1 bon de commande PDJ (PDF/Excel).")
+            else:
+                try:
+                    all_lines = []
+                    months = []
+                    for up in pdj_files:
+                        tmp = _save_uploaded_file(up, suffix=Path(getattr(up, "name", "")).suffix or ".pdf")
+                        _site, lines, m = parse_pdj_order_file(tmp)
+                        all_lines.extend(lines)
+                        if m:
+                            months.append(m)
+
+                    # Mois choisi : priorité à la saisie utilisateur, sinon premier mois détecté
+                    fm = force_month.strip() or (months[0] if months else None)
+                    tpl_path = _save_uploaded_file(economat_tpl, suffix=".xlsx")
+                    out_path = update_facturation_economat(tpl_path, all_lines, force_month=fm)
+
+                    with open(out_path, "rb") as f:
+                        st.download_button(
+                            "Télécharger Facturation_economat_PDJ.xlsx",
+                            data=f,
+                            file_name="Facturation_economat_PDJ.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        )
+                except Exception as e:
+                    st.error("Impossible de générer la facturation économat (PDJ).")
                     st.code(repr(e))
 
     with tab_all:
