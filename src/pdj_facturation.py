@@ -45,14 +45,29 @@ import openpyxl
 def _lazy_import_ocr():
     """Importe les libs OCR uniquement si nécessaires.
 
-    IMPORTANT : on n'utilise pas pdf2image/poppler, car beaucoup de postes
-    (Windows notamment) n'ont pas Poppler installé, ce qui provoque
-    PDFInfoNotInstalledError.
+    Les PDF *scannés* (avec quantités manuscrites) nécessitent un moteur OCR.
+    Ici on s'appuie sur **Tesseract** via `pytesseract`.
 
-    À la place, on rend les pages PDF en images via PyMuPDF (fitz), qui est
-    une dépendance Python pure (pas d'outil système à installer).
+    Note : on n'utilise pas pdf2image/Poppler. Les pages PDF sont rendues
+    en images via PyMuPDF (fitz), dépendance Python pure.
     """
     import pytesseract  # type: ignore
+
+    # Vérifie que le binaire `tesseract` est bien installé sur la machine.
+    try:
+        _ = pytesseract.get_tesseract_version()
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError(
+            "Tesseract n'est pas installé (ou pas dans le PATH).\n\n"
+            "➡️ Les bons PDF scannés nécessitent Tesseract pour lire les quantités manuscrites.\n"
+            "Solutions :\n"
+            "1) Installer Tesseract :\n"
+            "   - Windows : installeur UB Mannheim, puis ajouter le dossier au PATH\n"
+            "   - macOS : `brew install tesseract`\n"
+            "   - Linux : `sudo apt-get install tesseract-ocr`\n"
+            "2) Ou fournir des bons au format Excel (XLS/XLSX) à la place.\n"
+        ) from e
+
     return pytesseract
 
 
