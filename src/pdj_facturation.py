@@ -159,40 +159,45 @@ def _ocr_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
     return "\n".join(out)
 
 
-
 def _parse_items_from_ocr_text(text: str) -> List[Tuple[str, float]]:
     """
-    Version robuste pour formulaires PDJ scannés en tableau.
-    Associe une ligne produit suivie d'une ligne quantité.
+    Heuristique OCR:
+    On cherche des lignes type: "<libellé>  <qte commandée>"
+    On prend le PREMIER nombre rencontré = quantité commandée.
     """
     items: List[Tuple[str, float]] = []
-    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
 
-    last_product: Optional[str] = None
+    for line in (text or "").splitlines():
+        l = line.strip()
+        if not l:
+            continue
 
-    for l in lines:
         low = l.lower()
-
-        # Ignorer lignes parasites
         if any(tok in low for tok in BAD_TOKENS):
             continue
 
-        # Ligne contenant uniquement un nombre → quantité
-        num_match = re.fullmatch(r"\d+(?:[.,]\d+)?", l)
-        if num_match and last_product:
-            qty = float(l.replace(",", "."))
-            prod = _normalize_product_name(last_product)
-            items.append((prod, qty))
-            last_product = None
+        # Prend 1er nombre comme quantité commandée
+        m = re.match(r"^(.*?)(\d+(?:[.,]\d+)?)", l)
+        if not m:
             continue
 
-        # Ligne texte sans chiffre = produit
-        if not re.search(r"\d", l):
-            if len(l) > 2 and not any(x in low for x in ["mas", "date", "commande"]):
-                last_product = l
+        name = m.group(1).strip(" -:\t")
+        qty_str = m.group(2).replace(",", ".")
+        try:
+            qty = float(qty_str)
+        except Exception:
             continue
+
+        if not name or len(name) < 2:
+            continue
+
+        prod = _normalize_product_name(name)
+        items.append((prod, qty))
 
     return items
+
+
+# ----------------- Parsing Excel (.xls/.xlsx) -----------------
 
 def _parse_excel(file_bytes: bytes, filename: str) -> ParsedOrder:
     bio = io.BytesIO(file_bytes)
