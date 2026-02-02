@@ -161,57 +161,43 @@ def _ocr_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
 
 def _parse_items_from_ocr_text(text: str) -> List[Tuple[str, float]]:
     """
-    Heuristique OCR robuste pour bons PDJ scannés en tableau.
-
-    Cas gérés :
-    1) "<produit>  <qte>" sur une même ligne (comme avant)
-    2) "<produit>" sur une ligne, puis "<qte>" seul sur la ligne suivante
+    Heuristique OCR:
+    On cherche des lignes type: "<libellé>  <qte commandée>"
+    On prend le PREMIER nombre rencontré = quantité commandée.
     """
     items: List[Tuple[str, float]] = []
 
-    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
-    last_product: Optional[str] = None
-
-    for line in lines:
+    for line in (text or "").splitlines():
         l = line.strip()
-        low = l.lower()
+        if not l:
+            continue
 
+        low = l.lower()
         if any(tok in low for tok in BAD_TOKENS):
             continue
 
-        # 1) format "produit ... nombre"
-        m = re.match(r"^(.*?)(\d+(?:[.,]\d+)?)\s*$", l)
-        if m:
-            left = (m.group(1) or "").strip(" :-_\t")
-            num = m.group(2)
-            # ignore les poids (250g, 5kg...) et autres nombres parasites
-            if re.search(r"\b(?:g|kg|cl|ml)\b", low):
-                # laisse la chance au mode "ligne suivante"
-                pass
-            else:
-                name = _normalize_product_name(left)
-                if name:
-                    qty = float(num.replace(",", "."))
-                    items.append((name, qty))
-                    last_product = None
-                    continue
-
-        # 2) ligne contenant uniquement un nombre → quantité associée au produit précédent
-        if re.fullmatch(r"\d+(?:[.,]\d+)?", l) and last_product:
-            qty = float(l.replace(",", "."))
-            name = _normalize_product_name(last_product)
-            if name:
-                items.append((name, qty))
-            last_product = None
+        # Prend 1er nombre comme quantité commandée
+        m = re.match(r"^(.*?)(\d+(?:[.,]\d+)?)", l)
+        if not m:
             continue
 
-        # 3) sinon, si aucune chiffre, mémorise comme produit candidat
-        if not re.search(r"\d", l):
-            # évite des entêtes courants
-            if len(l) > 2 and not any(x in low for x in ["date", "mas", "toulouse", "lautrec"]):
-                last_product = l
+        name = m.group(1).strip(" -:\t")
+        qty_str = m.group(2).replace(",", ".")
+        try:
+            qty = float(qty_str)
+        except Exception:
+            continue
+
+        if not name or len(name) < 2:
+            continue
+
+        prod = _normalize_product_name(name)
+        items.append((prod, qty))
 
     return items
+
+
+# ----------------- Parsing Excel (.xls/.xlsx) -----------------
 
 def _parse_excel(file_bytes: bytes, filename: str) -> ParsedOrder:
     bio = io.BytesIO(file_bytes)
