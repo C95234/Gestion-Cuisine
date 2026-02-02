@@ -12,8 +12,7 @@ from openpyxl.utils import get_column_letter
 
 # PDF -> image
 import fitz  # pymupdf
-from PIL import Image
-
+from PIL import Image, ImageOps, ImageEnhance
 # OCR (requis pour PDF scanné)
 import pytesseract
 
@@ -114,7 +113,17 @@ def _detect_site_from_text(text: str, filename: str = "") -> Optional[str]:
         return "MAS"
     if "mas" in t and "toulouse" in t:
         return "MAS"
-    if "24t" in t or "24 ter" in t or "internat" in t:
+    # Internat: accepte plusieurs variantes OCR ("24 ter", "24T", "24ter", "24 simple", etc.)
+    if (
+        "internat" in t
+        or "24t" in t
+        or "24 t" in t
+        or "24 ter" in t
+        or "24ter" in t
+        or "24 simple" in t
+        or "24simple" in t
+        or re.search(r"\b24\s*s\b", t) is not None
+    ):
         return "Internat"
 
     return None
@@ -159,91 +168,267 @@ def _ocr_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
     return "\n".join(out)
 
 
+def _ocr_header_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
+    """OCR ciblé sur l'entête de la 1ère page (utile pour détecter le site sur scans pâles)."""
+    try:
+        images = _pdf_to_images(pdf_bytes, dpi_scale=3.0)
+        if not images:
+            return ""
+        img = images[0]
+        w, h = img.size
+        header = img.crop((0, 0, w, int(h * 0.22)))
+
+        gray = ImageOps.grayscale(header)
+        gray = ImageEnhance.Contrast(gray).enhance(2.5)
+        gray = ImageEnhance.Sharpness(gray).enhance(2.0)
+        bw = gray.point(lambda x: 0 if x < 180 else 255, "1")
+
+        return pytesseract.image_to_string(bw, lang="fra", config="--psm 6")
+    except Exception:
+        return ""
+
+
+
 def _parse_items_from_ocr_text(text: str) -> List[Tuple[str, float]]:
     """
-    Heuristique OCR:
-    On cherche des lignes type: "<libellé>  <qte commandée>"
-    On prend le PREMIER nombre rencontré = quantité commandée.
+    Parse robuste pour bons PDJ scannés (tableau).
+
+    - Supporte "Produit" sur une ligne puis quantité sur la suivante
+    - Corrige quelques erreurs OCR fréquentes (GO->30, U->4)
+    - Ignore les poids/grammages (ex: 250g, 5kg) pour éviter les faux positifs
     """
     items: List[Tuple[str, float]] = []
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
 
-    for line in (text or "").splitlines():
-        l = line.strip()
-        if not l:
-            continue
+    last_product: Optional[str] = None
+    pending_qty: Optional[float] = None  # quand l'OCR décale la quantité
 
+    def _to_qty(token: str) -> Optional[float]:
+        t = (token or "").strip()
+        if not t:
+            return None
+
+        # Corrections OCR observées sur tes bons
+        if t.upper() == "GO":  # "30" mal lu
+            return 30.0
+        if t.upper() == "U":   # "4" mal lu
+            return 4.0
+
+        if re.fullmatch(r"\d+(?:[.,]\d+)?", t):
+            try:
+                return float(t.replace(",", "."))
+            except Exception:
+                return None
+        return None
+
+    def _looks_like_weight(line_low: str) -> bool:
+        # vrai poids: doit contenir un nombre + (g|kg)
+        return bool(re.search(r"\b\d+\s*(?:kg|g)\b", line_low))
+
+    def _is_bad_product(name_low: str) -> bool:
+        # lignes souvent non commandées / parasites sur certains scans
+        return any(x in name_low for x in ["sel", "poivre"])
+
+    for l in lines:
         low = l.lower()
+
+        # ignorer bruit
         if any(tok in low for tok in BAD_TOKENS):
             continue
 
-        # Prend 1er nombre comme quantité commandée
-        m = re.match(r"^(.*?)(\d+(?:[.,]\d+)?)", l)
-        if not m:
+        # ignorer les lignes de poids
+        if _looks_like_weight(low):
+            # on ne prend PAS de nombre depuis ces lignes
+            if not re.search(r"\d", l) and len(l) > 2:
+                last_product = l
             continue
 
-        name = m.group(1).strip(" -:\t")
-        qty_str = m.group(2).replace(",", ".")
-        try:
-            qty = float(qty_str)
-        except Exception:
+        # Cas A: ligne = juste une quantité (ex: "30" sous le produit)
+        qty_only = _to_qty(l)
+        if qty_only is not None:
+            if last_product and not _is_bad_product(last_product.lower()):
+                if 0 < qty_only <= 200:
+                    items.append((_normalize_product_name(last_product), float(qty_only)))
+                last_product = None
+                pending_qty = None
+            else:
+                # on garde la quantité en attente (décalage OCR)
+                pending_qty = float(qty_only)
+                last_product = None
             continue
 
-        if not name or len(name) < 2:
+        # Cas B: "Produit <token>" (ex: "Lait entier GO")
+        m = re.match(r"^(.*?)(?:\s+)([A-Za-z]{1,2}|\d+(?:[.,]\d+)?)\s*$", l)
+        if m:
+            name = m.group(1).strip(" -:\t")
+            token = m.group(2).strip()
+            qty = _to_qty(token)
+            if name and qty is not None and 0 < qty <= 200:
+                nlow = name.lower()
+                if "date" not in nlow and "commande" not in nlow:
+                    norm = _normalize_product_name(name)
+                    # évite un faux positif fréquent: la date attachée aux condiments
+                    if norm in {"Ketchup", "Mayonnaise", "Sel", "Poivre"} and 20 <= qty <= 31:
+                        continue
+                    items.append((norm, float(qty)))
+                last_product = None
+                pending_qty = None
+                continue
+
+        # Cas C: ligne texte (produit)
+        if not re.search(r"\d", l):
+            # si on avait une quantité en attente, on tente de l'appliquer ici
+            if pending_qty is not None:
+                norm = _normalize_product_name(l)
+                if 0 < pending_qty <= 200:
+                    items.append((norm, float(pending_qty)))
+                pending_qty = None
+                last_product = None
+                continue
+
+            if len(l) > 2 and not any(x in low for x in ["date", "commande", "livraison"]):
+                last_product = l
             continue
 
-        prod = _normalize_product_name(name)
-        items.append((prod, qty))
+        # sinon ignore
 
     return items
 
 
-# ----------------- Parsing Excel (.xls/.xlsx) -----------------
-
 def _parse_excel(file_bytes: bytes, filename: str) -> ParsedOrder:
     bio = io.BytesIO(file_bytes)
-    df = pd.read_excel(bio)
 
-    header_text = " ".join([str(c) for c in df.columns])
-    site = _detect_site_from_text(header_text, filename)
+    # 1) Lecture brute sans header pour pouvoir retrouver la vraie ligne d'en-tête
+    try:
+        df_raw = pd.read_excel(bio, header=None)
+    except Exception:
+        # fallback classique
+        bio.seek(0)
+        df_raw = pd.read_excel(bio)
+
+    # Détection site à partir du nom + des premières cellules
+    head_sample = ""
+    try:
+        sample_vals = []
+        for r in range(min(8, len(df_raw))):
+            row = df_raw.iloc[r].tolist()
+            for v in row[:10]:
+                if v is None:
+                    continue
+                s = str(v).strip()
+                if s:
+                    sample_vals.append(s)
+        head_sample = " ".join(sample_vals)
+    except Exception:
+        head_sample = ""
+    site = _detect_site_from_text(head_sample, filename)
+
+    # 2) Trouver la ligne d'en-tête contenant "Produit"/"Désignation" etc.
+    header_row_idx = None
+    header_candidates = {"produit", "désignation", "designation", "article", "libellé", "libelle"}
+    qty_candidates = {"qté", "qte", "quantité", "quantite", "commande", "commandé", "commandee"}
+
+    try:
+        for i in range(min(40, len(df_raw))):
+            row = [str(x).strip().lower() for x in df_raw.iloc[i].tolist() if str(x).strip() != "nan"]
+            if not row:
+                continue
+            if any(h in cell for cell in row for h in header_candidates) and any(
+                q in cell for cell in row for q in qty_candidates
+            ):
+                header_row_idx = i
+                break
+    except Exception:
+        header_row_idx = None
 
     items: List[Tuple[str, float]] = []
 
-    col_prod = None
-    for cand in ["Produit", "Désignation", "Designation", "Article", "Libellé", "Libelle"]:
-        if cand in df.columns:
-            col_prod = cand
-            break
+    if header_row_idx is not None:
+        # Recharger avec cette ligne comme header
+        bio.seek(0)
+        df = pd.read_excel(bio, header=header_row_idx)
 
-    col_qty = None
-    for cand in ["Qté", "Qte", "Quantité", "Quantite", "Commande", "Commandé", "Commandee"]:
-        if cand in df.columns:
-            col_qty = cand
-            break
+        # Détection site sur header si possible
+        try:
+            header_text = " ".join([str(c) for c in df.columns])
+            site = site or _detect_site_from_text(header_text, filename)
+        except Exception:
+            pass
 
-    if col_prod and col_qty:
-        for _, r in df.iterrows():
-            prod_raw = str(r.get(col_prod, "")).strip()
-            if not prod_raw or prod_raw.lower() in BAD_TOKENS:
-                continue
-            try:
-                qty = float(str(r.get(col_qty, "0")).replace(",", "."))
-            except Exception:
-                continue
-            if qty <= 0:
-                continue
-            items.append((_normalize_product_name(prod_raw), qty))
-    else:
-        # fallback colonnes produits -> valeurs numériques
+        col_prod = None
+        for cand in ["Produit", "Désignation", "Designation", "Article", "Libellé", "Libelle"]:
+            if cand in df.columns:
+                col_prod = cand
+                break
+
+        col_qty = None
+        for cand in ["Qté", "Qte", "Quantité", "Quantite", "Commande", "Commandé", "Commandee"]:
+            if cand in df.columns:
+                col_qty = cand
+                break
+
+        if col_prod and col_qty:
+            for _, r in df.iterrows():
+                prod_raw = str(r.get(col_prod, "")).strip()
+                if not prod_raw:
+                    continue
+                low = prod_raw.lower()
+                if any(tok in low for tok in BAD_TOKENS):
+                    continue
+                # quantité
+                try:
+                    qty = float(str(r.get(col_qty, "0")).replace(",", "."))
+                except Exception:
+                    continue
+                if qty <= 0:
+                    continue
+                items.append((_normalize_product_name(prod_raw), float(qty)))
+            return ParsedOrder(filename=filename, site=site, items=items)
+
+    # 3) Fallback générique pour tableaux "Détail Déj-gouter 24T" :
+    #    - produit = première colonne texte
+    #    - quantité = somme des colonnes numériques de la ligne
+    try:
+        df = df_raw.copy()
+        # repérer colonnes majoritairement numériques
+        num_cols = []
         for c in df.columns:
-            if isinstance(c, str) and c.strip():
-                s = df[c]
-                if pd.api.types.is_numeric_dtype(s):
-                    qty = float(s.fillna(0).sum())
-                    if qty > 0:
-                        items.append((_normalize_product_name(c), qty))
+            s = df[c]
+            # convert to numeric where possible
+            sn = pd.to_numeric(s, errors="coerce")
+            if sn.notna().sum() >= max(3, int(0.2 * len(sn))):
+                num_cols.append(c)
+
+        text_cols = [c for c in df.columns if c not in num_cols]
+
+        prod_col = text_cols[0] if text_cols else df.columns[0]
+
+        for _, row in df.iterrows():
+            prod_raw = row.get(prod_col, "")
+            if prod_raw is None:
+                continue
+            prod_raw = str(prod_raw).strip()
+            if not prod_raw:
+                continue
+            low = prod_raw.lower()
+            if any(tok in low for tok in BAD_TOKENS):
+                continue
+
+            qty = 0.0
+            for c in num_cols:
+                v = row.get(c, 0)
+                try:
+                    fv = float(str(v).replace(",", "."))
+                except Exception:
+                    fv = 0.0
+                if fv and not pd.isna(fv):
+                    qty += fv
+            if qty > 0:
+                items.append((_normalize_product_name(prod_raw), float(qty)))
+    except Exception:
+        pass
 
     return ParsedOrder(filename=filename, site=site, items=items)
-
 
 # ----------------- API attendue par app.py -----------------
 
@@ -257,6 +442,10 @@ def parse_pdj_order_file(uploaded_file) -> ParsedOrder:
     if name.lower().endswith(".pdf"):
         text = _ocr_text_from_pdf_bytes(file_bytes)
         site = _detect_site_from_text(text, name)
+
+        if not site:
+            header_text = _ocr_header_text_from_pdf_bytes(file_bytes)
+            site = _detect_site_from_text(header_text, name)
         items = _parse_items_from_ocr_text(text)
         return ParsedOrder(filename=name, site=site, items=items)
 
