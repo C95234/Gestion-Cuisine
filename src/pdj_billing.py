@@ -11,6 +11,14 @@ import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+# PDF (factures simplifiées par site)
+import io
+import zipfile
+
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.pdfgen import canvas
+
 
 # -----------------------------------------------------------------------------
 # Objectif
@@ -546,6 +554,155 @@ def export_monthly_pdj_workbook(month: str, out_path: str) -> str:
 
     wb.save(out_path)
     return out_path
+
+
+# -----------------------------------------------------------------------------
+# Export PDF simplifié : 1 facture par site (mois)
+# -----------------------------------------------------------------------------
+
+
+def _safe_filename(s: str) -> str:
+    s = re.sub(r"[^A-Za-z0-9._ -]+", "_", str(s or "")).strip()
+    s = re.sub(r"\s+", " ", s)
+    return s or "site"
+
+
+def build_site_invoice_tables(month: str, site: str) -> Tuple[pd.DataFrame, pd.DataFrame, float]:
+    """Retourne (lignes_produits, ajustements, total_facture).
+
+    lignes_produits: product, qty, unit, unit_price, line_total
+    ajustements: label, amount_eur
+    """
+    synth, detail, adj = compute_monthly_pdj(month)
+    siteN = norm_site_facturation(site)
+
+    d = detail[detail["site"] == siteN].copy()
+    if d.empty:
+        lines = pd.DataFrame(columns=["product", "qty", "unit", "unit_price", "line_total"])
+    else:
+        lines = (
+            d.groupby(["product", "unit", "unit_price"], as_index=False)["qty"].sum()
+            .sort_values("product")
+        )
+        lines["line_total"] = lines["qty"].astype(float) * lines["unit_price"].astype(float)
+
+    a = adj[adj["site"] == siteN].copy()
+    if a.empty:
+        adj_tbl = pd.DataFrame(columns=["label", "amount_eur"])
+        adj_sum = 0.0
+    else:
+        adj_tbl = a.groupby("label", as_index=False)["amount_eur"].sum().sort_values("label")
+        adj_sum = float(adj_tbl["amount_eur"].sum())
+
+    total = float(lines["line_total"].sum() if not lines.empty else 0.0) + adj_sum
+    return lines, adj_tbl, total
+
+
+def export_site_invoice_pdf(month: str, site: str, out_path: str) -> str:
+    """Génère un PDF A4 (simple, sans colonnes superflues) pour 1 site."""
+    lines, adj_tbl, total = build_site_invoice_tables(month, site)
+    siteN = norm_site_facturation(site)
+
+    c = canvas.Canvas(out_path, pagesize=A4)
+    w, h = A4
+    left = 18 * mm
+    right = w - 18 * mm
+    y = h - 18 * mm
+
+    def txt(s: str, size: int = 11, bold: bool = False):
+        nonlocal y
+        c.setFont("Helvetica-Bold" if bold else "Helvetica", size)
+        c.drawString(left, y, s)
+        y -= (size + 4)
+
+    # En-tête
+    txt(f"FACTURATION PDJ — {month}", size=16, bold=True)
+    txt(f"Site : {siteN}", size=12, bold=True)
+    txt(f"Généré le : {dt.date.today().strftime('%d/%m/%Y')}", size=10)
+    y -= 4
+
+    # Tableau
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(left, y, "Produit")
+    c.drawRightString(right - 70, y, "Qté")
+    c.drawRightString(right - 20, y, "PU")
+    c.drawRightString(right, y, "Total")
+    y -= 8
+    c.line(left, y, right, y)
+    y -= 12
+
+    def money(v: float) -> str:
+        return f"{v:,.2f} €".replace(",", " ").replace(".", ",")
+
+    c.setFont("Helvetica", 10)
+    if lines.empty:
+        c.drawString(left, y, "(Aucune consommation enregistrée)")
+        y -= 14
+    else:
+        for r in lines.itertuples(index=False):
+            prod = str(getattr(r, "product", ""))
+            qty = float(getattr(r, "qty", 0.0) or 0.0)
+            pu = float(getattr(r, "unit_price", 0.0) or 0.0)
+            lt = float(getattr(r, "line_total", 0.0) or 0.0)
+            # Saut de page si besoin
+            if y < 35 * mm:
+                c.showPage()
+                y = h - 18 * mm
+                c.setFont("Helvetica", 10)
+            c.drawString(left, y, prod[:65])
+            c.drawRightString(right - 70, y, f"{qty:g}")
+            c.drawRightString(right - 20, y, money(pu))
+            c.drawRightString(right, y, money(lt))
+            y -= 14
+
+    # Ajustements
+    if not adj_tbl.empty:
+        y -= 6
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(left, y, "Ajustements")
+        y -= 10
+        c.setFont("Helvetica", 10)
+        for r in adj_tbl.itertuples(index=False):
+            if y < 35 * mm:
+                c.showPage()
+                y = h - 18 * mm
+            lab = str(getattr(r, "label", "Ajustement"))
+            amt = float(getattr(r, "amount_eur", 0.0) or 0.0)
+            c.drawString(left, y, lab[:65])
+            c.drawRightString(right, y, money(amt))
+            y -= 14
+
+    # Total
+    y -= 4
+    c.line(left, y, right, y)
+    y -= 18
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(left, y, "TOTAL MENSUEL À RÉGLER")
+    c.drawRightString(right, y, money(total))
+
+    c.showPage()
+    c.save()
+    return out_path
+
+
+def export_monthly_invoices_zip(month: str) -> bytes:
+    """Retourne un ZIP en mémoire contenant 1 PDF par site présent sur le mois."""
+    synth, detail, adj = compute_monthly_pdj(month)
+    sites = set(detail["site"].dropna().astype(str).tolist()) | set(adj["site"].dropna().astype(str).tolist())
+    sites = sorted([s for s in sites if str(s).strip()])
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        if not sites:
+            # zip vide + README
+            z.writestr("README.txt", f"Aucune donnée PDJ pour {month}.")
+        for s in sites:
+            pdf_bytes = io.BytesIO()
+            # reportlab écrit sur un chemin ou file-like : on passe un buffer.
+            export_site_invoice_pdf(month, s, pdf_bytes)  # type: ignore[arg-type]
+            name = f"Facture_PDJ_{month}_{_safe_filename(s)}.pdf"
+            z.writestr(name, pdf_bytes.getvalue())
+    return buf.getvalue()
 
 
 # -----------------------------------------------------------------------------
