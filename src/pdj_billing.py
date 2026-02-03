@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -168,6 +169,12 @@ def load_pdj_records() -> pd.DataFrame:
     df["kind"] = df["kind"].astype(str)
     df["comment"] = df.get("comment", "").astype(str)
     df["source"] = df.get("source", "").astype(str)
+    # Compat rétro: anciens fichiers sans identifiant
+    if "record_id" not in df.columns:
+        df["record_id"] = [str(uuid.uuid4()) for _ in range(len(df))]
+        df.to_csv(p, index=False)
+    else:
+        df["record_id"] = df["record_id"].astype(str)
     return df
 
 
@@ -206,8 +213,9 @@ def add_pdj_records(
         df["comment"] = ""
     df["comment"] = df["comment"].astype(str)
     df["source"] = source_filename
+    df["record_id"] = [str(uuid.uuid4()) for _ in range(len(df))]
 
-    df = df[["date", "month", "site", "product", "qty", "kind", "comment", "source"]]
+    df = df[["record_id", "date", "month", "site", "product", "qty", "kind", "comment", "source"]]
 
     p = _records_path()
     if p.exists():
@@ -223,6 +231,50 @@ def add_pdj_records(
     meta.setdefault("last_update", dt.datetime.now().isoformat(timespec="seconds"))
     _write_meta(meta)
     return int(len(df))
+
+
+def delete_pdj_records(
+    *,
+    month: Optional[str] = None,
+    site: Optional[str] = None,
+    source: Optional[str] = None,
+    kind: Optional[str] = None,
+    record_ids: Optional[List[str]] = None,
+) -> int:
+    """Supprime des lignes PDJ stockées.
+
+    - Si record_ids est fourni: supprime exactement ces lignes.
+    - Sinon, supprime selon filtres (mois/site/source/kind).
+    Retourne le nombre de lignes supprimées.
+    """
+    p = _records_path()
+    if not p.exists():
+        return 0
+
+    df = load_pdj_records()
+    before = len(df)
+
+    mask = pd.Series([True] * len(df))
+    if record_ids:
+        ids = {str(x) for x in record_ids}
+        mask &= df["record_id"].astype(str).isin(ids)
+    else:
+        if month:
+            mask &= df["month"].astype(str) == str(month)
+        if site and str(site).strip():
+            mask &= df["site"].astype(str) == norm_site_facturation(site)
+        if source and str(source).strip():
+            mask &= df["source"].astype(str) == str(source)
+        if kind and str(kind).strip():
+            mask &= df["kind"].astype(str) == str(kind)
+
+    to_delete = df.loc[mask]
+    if to_delete.empty:
+        return 0
+
+    df2 = df.loc[~mask].copy()
+    df2.to_csv(p, index=False)
+    return int(before - len(df2))
 
 
 def load_unit_prices() -> pd.DataFrame:
@@ -286,7 +338,7 @@ def load_money_adjustments() -> pd.DataFrame:
     """
     p = _money_adj_path()
     if not p.exists():
-        return pd.DataFrame(columns=["date", "month", "site", "label", "amount_eur", "comment"])
+        return pd.DataFrame(columns=["adj_id", "date", "month", "site", "label", "amount_eur", "comment"])
     df = pd.read_csv(p, parse_dates=["date"])
     df["date"] = pd.to_datetime(df["date"]).dt.date
     df["month"] = df["month"].astype(str)
@@ -294,7 +346,15 @@ def load_money_adjustments() -> pd.DataFrame:
     df["label"] = df.get("label", "Ajustement").astype(str)
     df["amount_eur"] = pd.to_numeric(df.get("amount_eur", 0.0), errors="coerce").fillna(0.0)
     df["comment"] = df.get("comment", "").astype(str)
-    return df[["date", "month", "site", "label", "amount_eur", "comment"]]
+
+    # Compat rétro: anciens fichiers sans identifiant
+    if "adj_id" not in df.columns:
+        df["adj_id"] = [str(uuid.uuid4()) for _ in range(len(df))]
+        df.to_csv(p, index=False)
+    else:
+        df["adj_id"] = df["adj_id"].astype(str)
+
+    return df[["adj_id", "date", "month", "site", "label", "amount_eur", "comment"]]
 
 
 def add_money_adjustments(adj: pd.DataFrame) -> int:
@@ -318,7 +378,8 @@ def add_money_adjustments(adj: pd.DataFrame) -> int:
     df["label"] = df["label"].astype(str)
     df["amount_eur"] = pd.to_numeric(df["amount_eur"], errors="coerce").fillna(0.0)
     df["comment"] = df["comment"].astype(str)
-    df = df[["date", "month", "site", "label", "amount_eur", "comment"]]
+    df["adj_id"] = [str(uuid.uuid4()) for _ in range(len(df))]
+    df = df[["adj_id", "date", "month", "site", "label", "amount_eur", "comment"]]
 
     p = _money_adj_path()
     if p.exists():
@@ -329,6 +390,42 @@ def add_money_adjustments(adj: pd.DataFrame) -> int:
     merged = pd.concat([old, df], ignore_index=True)
     merged.to_csv(p, index=False)
     return int(len(df))
+
+
+def delete_money_adjustments(
+    *,
+    month: Optional[str] = None,
+    site: Optional[str] = None,
+    adj_ids: Optional[List[str]] = None,
+) -> int:
+    """Supprime des ajustements en euros.
+
+    - Si adj_ids est fourni: supprime exactement ces lignes.
+    - Sinon, supprime selon filtres (mois/site).
+    """
+    p = _money_adj_path()
+    if not p.exists():
+        return 0
+
+    df = load_money_adjustments()
+    before = len(df)
+
+    mask = pd.Series([True] * len(df))
+    if adj_ids:
+        ids = {str(x) for x in adj_ids}
+        mask &= df["adj_id"].astype(str).isin(ids)
+    else:
+        if month:
+            mask &= df["month"].astype(str) == str(month)
+        if site and str(site).strip():
+            mask &= df["site"].astype(str) == norm_site_facturation(site)
+
+    if not df.loc[mask].any().any():
+        return 0
+
+    df2 = df.loc[~mask].copy()
+    df2.to_csv(p, index=False)
+    return int(before - len(df2))
 
 
 # -----------------------------------------------------------------------------
