@@ -686,36 +686,21 @@ try:
             pdj_source = st.text_input("Référence (optionnel)", value="", key="pdj_source")
 
         pdj_file = st.file_uploader(
-            "Importer un bon PDJ (Excel .xlsx/.xls ou PDF) — optionnel",
+            "Importer un bon PDJ (PDF/Excel) — optionnel (archivage)",
             type=["xlsx", "xls", "xlsm", "pdf"],
             key="pdj_import",
         )
 
         st.caption(
-            "Tu peux coller les quantités du bon : une ligne = 1 produit. "
-            "Astuce : laisse à 0 les produits non commandés."
+            "Saisie **manuelle** (mode fiable) : une ligne = 1 produit. "
+            "Astuce : laisse à 0 les produits non consommés. "
+            "Le fichier importé sert uniquement de pièce jointe / référence (pas de lecture OCR)."
         )
 
-        # Table de saisie pré-remplie (avec tentative de pré-remplissage depuis Excel)
+        # Table de saisie pré-remplie (sans OCR : plus robuste)
         base_rows = pd.DataFrame({"product": pdj_default_products, "qty": 0.0})
         if pdj_file is not None:
-            try:
-                suffix = Path(getattr(pdj_file, "name", "")).suffix.lower() or ".xlsx"
-                tmp_pdj = _save_uploaded_file(pdj_file, suffix=suffix)
-                if suffix == ".pdf":
-                    imported = pdj_billing.parse_pdj_pdf(tmp_pdj)
-                else:
-                    imported = pdj_billing.parse_pdj_excel(tmp_pdj)
-                if not imported.empty:
-                    merged = base_rows.merge(imported, on="product", how="left", suffixes=("", "_imp"))
-                    merged["qty"] = merged["qty_imp"].fillna(merged["qty"]).astype(float)
-                    base_rows = merged[["product", "qty"]]
-                    st.info("Bon importé : quantités pré-remplies (vérifie et corrige si nécessaire).")
-                else:
-                    st.warning("Bon importé mais aucune ligne quantité détectée (format non reconnu).")
-            except Exception as e:
-                st.warning("Impossible de lire ce fichier (Excel/PDF). Utilise la saisie manuelle ci-dessous.")
-                st.code(repr(e))
+            st.info("📎 Bon importé en référence. Renseigne les quantités manuellement ci-dessous.")
         pdj_table = st.data_editor(
             base_rows,
             use_container_width=True,
@@ -813,7 +798,13 @@ try:
             st.markdown("**Détail lignes (mois)**")
             st.dataframe(detail, use_container_width=True, hide_index=True)
 
-        if st.button("📤 Exporter Facturation PDJ (Excel)", type="primary", key="pdj_export"):
+        c_exp1, c_exp2 = st.columns([1, 1])
+        with c_exp1:
+            do_xlsx = st.button("📤 Exporter Facturation PDJ (Excel)", type="primary", key="pdj_export")
+        with c_exp2:
+            do_pdf = st.button("📄 Exporter factures PDF par site (ZIP)", type="primary", key="pdj_export_pdf")
+
+        if do_xlsx:
             out_xlsx = _temp_out_path(".xlsx")
             try:
                 pdj_export_monthly_workbook(month, out_xlsx)
@@ -826,6 +817,19 @@ try:
                     )
             except Exception as e:
                 st.error("Erreur lors de l'export PDJ")
+                st.code(repr(e))
+
+        if do_pdf:
+            try:
+                zip_bytes = pdj_billing.export_monthly_invoices_zip(month)
+                st.download_button(
+                    "Télécharger factures PDJ (ZIP)",
+                    data=zip_bytes,
+                    file_name=f"Factures_PDJ_{month}.zip",
+                    mime="application/zip",
+                )
+            except Exception as e:
+                st.error("Erreur lors de la génération des PDF")
                 st.code(repr(e))
 
     with tab_all:
