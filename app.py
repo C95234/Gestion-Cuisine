@@ -62,6 +62,10 @@ def _import_or_stop():
         billing = importlib.import_module("src.billing")
         importlib.reload(billing)
 
+        # Import facturation PDJ
+        pdj_billing = importlib.import_module("src.pdj_billing")
+        importlib.reload(pdj_billing)
+
         # Import allergènes
         learner = importlib.import_module("src.allergens.learner")
         importlib.reload(learner)
@@ -69,7 +73,7 @@ def _import_or_stop():
         generator = importlib.import_module("src.allergens.generator")
         importlib.reload(generator)
 
-        return processor, cs, order_forms, billing, learner, generator
+        return processor, cs, order_forms, billing, pdj_billing, learner, generator
 
     except Exception as e:
         st.error("💥 Erreur lors d’un import (module src.*)")
@@ -78,7 +82,7 @@ def _import_or_stop():
         st.stop()
 
 
-processor, cs, order_forms, billing, learner, generator = _import_or_stop()
+processor, cs, order_forms, billing, pdj_billing, learner, generator = _import_or_stop()
 
 # Exports processor
 parse_planning_fabrication = processor.parse_planning_fabrication
@@ -104,6 +108,16 @@ save_week = billing.save_week
 load_records = billing.load_records
 export_monthly_workbook = billing.export_monthly_workbook
 apply_corrected_monthly_workbook = billing.apply_corrected_monthly_workbook
+
+# pdj_billing
+pdj_default_products = pdj_billing.DEFAULT_PRODUCTS
+pdj_load_records = pdj_billing.load_pdj_records
+pdj_add_records = pdj_billing.add_pdj_records
+pdj_load_prices = pdj_billing.load_unit_prices
+pdj_save_prices = pdj_billing.save_unit_prices
+pdj_add_money_adjustments = pdj_billing.add_money_adjustments
+pdj_load_money_adjustments = pdj_billing.load_money_adjustments
+pdj_export_monthly_workbook = pdj_billing.export_monthly_pdj_workbook
 
 # allergènes
 learn_from_filled_allergen_workbook = learner.learn_from_filled_allergen_workbook
@@ -311,12 +325,13 @@ try:
     prod_din_piv = make_production_pivot(planning["diner"])
 
     # ---- UI ----
-    tab_prod, tab_bc, tab_bl, tab_factu, tab_all = st.tabs(
+    tab_prod, tab_bc, tab_bl, tab_factu, tab_factu_pdj, tab_all = st.tabs(
         [
             "Production (Déj / Dîn)",
             "Bon de commande",
             "Bons de livraison",
             "Facturation mensuelle",
+            "Facturation PDJ",
             "Allergènes",
         ]
     )
@@ -648,6 +663,170 @@ try:
                 except Exception as e:
                     st.error("Impossible d'importer ce fichier. Il doit provenir de l'export de l'app.")
                     st.code(repr(e))
+
+    with tab_factu_pdj:
+        st.subheader("Facturation PDJ")
+        st.caption(
+            "Objectif : enregistrer plusieurs bons de commande PDJ (par site), définir les prix unitaires par produit, "
+            "ajouter des consommations/avoirs manuels, puis exporter une facturation mensuelle détaillée."
+        )
+
+        # --- Sélection du mois (YYYY-MM)
+        today = dt.date.today()
+        default_month = f"{today.year:04d}-{today.month:02d}"
+        month = st.text_input("Mois à facturer (YYYY-MM)", value=default_month, key="pdj_month")
+
+        st.markdown("### 1) Saisie d'un bon PDJ")
+        c1, c2, c3 = st.columns([1, 1, 2])
+        with c1:
+            pdj_date = st.date_input("Date du bon (commande/livraison)", value=today, key="pdj_date")
+        with c2:
+            pdj_site = st.text_input("Site (ex: 24 ter, 24 simple, MAS TL...)", value="", key="pdj_site")
+        with c3:
+            pdj_source = st.text_input("Référence (optionnel)", value="", key="pdj_source")
+
+        pdj_file = st.file_uploader(
+            "Importer un bon PDJ (Excel .xlsx/.xls ou PDF) — optionnel",
+            type=["xlsx", "xls", "xlsm", "pdf"],
+            key="pdj_import",
+        )
+
+        st.caption(
+            "Tu peux coller les quantités du bon : une ligne = 1 produit. "
+            "Astuce : laisse à 0 les produits non commandés."
+        )
+
+        # Table de saisie pré-remplie (avec tentative de pré-remplissage depuis Excel)
+        base_rows = pd.DataFrame({"product": pdj_default_products, "qty": 0.0})
+        if pdj_file is not None:
+            try:
+                suffix = Path(getattr(pdj_file, "name", "")).suffix.lower() or ".xlsx"
+                tmp_pdj = _save_uploaded_file(pdj_file, suffix=suffix)
+                if suffix == ".pdf":
+                    imported = pdj_billing.parse_pdj_pdf(tmp_pdj)
+                else:
+                    imported = pdj_billing.parse_pdj_excel(tmp_pdj)
+                if not imported.empty:
+                    merged = base_rows.merge(imported, on="product", how="left", suffixes=("", "_imp"))
+                    merged["qty"] = merged["qty_imp"].fillna(merged["qty"]).astype(float)
+                    base_rows = merged[["product", "qty"]]
+                    st.info("Bon importé : quantités pré-remplies (vérifie et corrige si nécessaire).")
+                else:
+                    st.warning("Bon importé mais aucune ligne quantité détectée (format non reconnu).")
+            except Exception as e:
+                st.warning("Impossible de lire ce fichier (Excel/PDF). Utilise la saisie manuelle ci-dessous.")
+                st.code(repr(e))
+        pdj_table = st.data_editor(
+            base_rows,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key="pdj_order_editor",
+        )
+
+        kind = st.selectbox(
+            "Type d'enregistrement",
+            options=["commande", "manuel", "avoir_qty"],
+            index=0,
+            help="commande = bon de commande; manuel = consommation ajoutée; avoir_qty = avoir en quantités (valeurs négatives possibles)",
+            key="pdj_kind",
+        )
+        comment = st.text_input("Commentaire (optionnel)", value="", key="pdj_comment")
+
+        if st.button("➕ Enregistrer ce bon PDJ", type="primary", key="pdj_save_order"):
+            if not str(pdj_site).strip():
+                st.error("Renseigne un site pour enregistrer le bon.")
+            else:
+                df = pdj_table.copy()
+                df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0.0)
+                df = df[df["qty"] != 0].copy()
+                if df.empty:
+                    st.warning("Aucune quantité non nulle : rien à enregistrer.")
+                else:
+                    df["date"] = pdj_date
+                    df["site"] = pdj_site
+                    df["kind"] = kind
+                    df["comment"] = comment
+                    n = pdj_add_records(df, source_filename=pdj_source)
+                    st.success(f"✅ Bon enregistré : {n} ligne(s).")
+
+        st.markdown("### 2) Tarifs unitaires")
+        st.caption(
+            "Renseigne les prix unitaires par produit. Si tous les sites ont le même tarif, laisse 'site' = __default__. "
+            "Tu peux ajouter une ligne avec un site spécifique si besoin."
+        )
+        prices = pdj_load_prices()
+        prices_edit = st.data_editor(
+            prices,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key="pdj_prices_editor",
+        )
+        if st.button("💾 Enregistrer les tarifs", key="pdj_save_prices"):
+            try:
+                n = pdj_save_prices(prices_edit)
+                st.success(f"✅ Tarifs enregistrés ({n} lignes).")
+            except Exception as e:
+                st.error("Erreur lors de l'enregistrement des tarifs")
+                st.code(repr(e))
+
+        st.markdown("### 3) Ajustements monétaires (avoirs / corrections en €)")
+        st.caption("Exemples : avoir global, correction sans quantité, frais exceptionnels. Montant négatif = avoir.")
+        adj_base = pd.DataFrame(
+            {
+                "date": [today],
+                "site": [""],
+                "label": ["Avoir"],
+                "amount_eur": [0.0],
+                "comment": [""],
+            }
+        )
+        adj_edit = st.data_editor(
+            adj_base,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key="pdj_adj_editor",
+        )
+        if st.button("➕ Ajouter ces ajustements", key="pdj_add_adj"):
+            try:
+                df = adj_edit.copy()
+                df["amount_eur"] = pd.to_numeric(df["amount_eur"], errors="coerce").fillna(0.0)
+                df = df[df["amount_eur"] != 0].copy()
+                if df.empty:
+                    st.warning("Aucun montant non nul : rien à ajouter.")
+                else:
+                    n = pdj_add_money_adjustments(df)
+                    st.success(f"✅ Ajustements ajoutés : {n} ligne(s).")
+            except Exception as e:
+                st.error("Erreur lors de l'ajout des ajustements")
+                st.code(repr(e))
+
+        st.markdown("### 4) Aperçu & export mensuel")
+        synth, detail, adj = pdj_billing.compute_monthly_pdj(month)
+        cA, cB = st.columns(2)
+        with cA:
+            st.markdown("**Synthèse par site**")
+            st.dataframe(synth, use_container_width=True, hide_index=True)
+        with cB:
+            st.markdown("**Détail lignes (mois)**")
+            st.dataframe(detail, use_container_width=True, hide_index=True)
+
+        if st.button("📤 Exporter Facturation PDJ (Excel)", type="primary", key="pdj_export"):
+            out_xlsx = _temp_out_path(".xlsx")
+            try:
+                pdj_export_monthly_workbook(month, out_xlsx)
+                with open(out_xlsx, "rb") as f:
+                    st.download_button(
+                        "Télécharger Facturation_PDJ.xlsx",
+                        data=f,
+                        file_name=f"Facturation_PDJ_{month}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+            except Exception as e:
+                st.error("Erreur lors de l'export PDJ")
+                st.code(repr(e))
 
     with tab_all:
         st.subheader("Tableaux allergènes (format EXACT)")
