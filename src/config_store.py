@@ -192,24 +192,13 @@ class ConfigStore:
             return default
 
     def _safe_save(self, path: Path, data: Any) -> None:
-        """Sauvegarde atomique.
-
-        IMPORTANT : on ne masque plus silencieusement les erreurs, sinon l'utilisateur
-        pense que tout est mémorisé alors que rien n'est écrit.
-        """
-        # Sauvegarde atomique (évite un fichier JSON corrompu en cas de veille/coupure)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
-
-    # Public helper (diagnostic)
-    def info(self) -> Dict[str, str]:
-        return {
-            "base_dir": str(self.base_dir),
-            "coefficients": str(self._coeff_path),
-            "units": str(self._units_path),
-            "suppliers": str(self._suppliers_path),
-        }
+        try:
+            # Sauvegarde atomique (évite un fichier JSON corrompu en cas de veille/coupure)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(path)
+        except Exception:
+            pass
 
 
 # Expose explicit public API for `from src.config_store import ConfigStore`

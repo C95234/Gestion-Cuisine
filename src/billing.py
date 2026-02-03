@@ -3,7 +3,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
-import uuid
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -185,8 +184,7 @@ def save_week(
         out["qty"] = pd.to_numeric(out[qty_col], errors="coerce").fillna(0).astype(int)
         out["week_monday"] = week_monday.isoformat()
         out["source"] = source_filename
-        out["record_id"] = [str(uuid.uuid4()) for _ in range(len(out))]
-        return out[["record_id","date","site","category","qty","week_monday","source"]]
+        return out[["date","site","category","qty","week_monday","source"]]
 
     a = _norm_df(repas_daily, "qty_repas", "repas")
     b = _norm_df(ml_daily, "qty_ml", "mixe_lisse")
@@ -197,7 +195,7 @@ def save_week(
         old = pd.read_csv(p, parse_dates=["date"])
         old["date"] = pd.to_datetime(old["date"]).dt.date
     else:
-        old = pd.DataFrame(columns=["record_id","date","site","category","qty","week_monday","source"])
+        old = pd.DataFrame(columns=["date","site","category","qty","week_monday","source"])
 
     week_dates = {week_monday + dt.timedelta(days=i) for i in range(7)}
     mask_keep = ~(
@@ -222,49 +220,13 @@ def save_week(
 def load_records() -> pd.DataFrame:
     p = _records_path()
     if not p.exists():
-        return pd.DataFrame(columns=["record_id","date","site","category","qty","week_monday","source"])
+        return pd.DataFrame(columns=["date","site","category","qty","week_monday","source"])
     df = pd.read_csv(p, parse_dates=["date"])
     df["date"] = pd.to_datetime(df["date"]).dt.date
     df["site"] = df["site"].astype(str)
     df["category"] = df["category"].astype(str)
     df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0).astype(int)
-    if "record_id" not in df.columns:
-        df["record_id"] = [str(uuid.uuid4()) for _ in range(len(df))]
-        df.to_csv(p, index=False)
-    else:
-        df["record_id"] = df["record_id"].astype(str)
     return df
-
-
-def delete_billing_records(*, week_monday: Optional[dt.date] = None, record_ids: Optional[List[str]] = None) -> int:
-    """Supprime des lignes de facturation 'Repas/Mixé-Lissé'.
-
-    - Si record_ids est fourni: supprime exactement ces lignes.
-    - Sinon, si week_monday est fourni: supprime toute la semaine.
-    """
-    p = _records_path()
-    if not p.exists():
-        return 0
-
-    df = load_records()
-    before = len(df)
-    mask = pd.Series([False] * len(df))
-
-    if record_ids:
-        ids = {str(x) for x in record_ids}
-        mask |= df["record_id"].astype(str).isin(ids)
-    elif week_monday is not None:
-        wm = week_monday.isoformat()
-        mask |= df.get("week_monday", "").astype(str) == wm
-    else:
-        return 0
-
-    if df.loc[mask].empty:
-        return 0
-
-    df2 = df.loc[~mask].copy()
-    df2.to_csv(p, index=False)
-    return int(before - len(df2))
 
 
 # -----------------------------

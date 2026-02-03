@@ -108,7 +108,6 @@ save_week = billing.save_week
 load_records = billing.load_records
 export_monthly_workbook = billing.export_monthly_workbook
 apply_corrected_monthly_workbook = billing.apply_corrected_monthly_workbook
-delete_billing_records = getattr(billing, "delete_billing_records", None)
 
 # pdj_billing
 pdj_default_products = pdj_billing.DEFAULT_PRODUCTS
@@ -119,8 +118,6 @@ pdj_save_prices = pdj_billing.save_unit_prices
 pdj_add_money_adjustments = pdj_billing.add_money_adjustments
 pdj_load_money_adjustments = pdj_billing.load_money_adjustments
 pdj_export_monthly_workbook = pdj_billing.export_monthly_pdj_workbook
-pdj_delete_records = getattr(pdj_billing, "delete_pdj_records", None)
-pdj_delete_money_adjustments = getattr(pdj_billing, "delete_money_adjustments", None)
 
 # allergènes
 learn_from_filled_allergen_workbook = learner.learn_from_filled_allergen_workbook
@@ -194,17 +191,6 @@ def _temp_out_path(suffix: str) -> str:
     return path
 
 
-def _read_excel_any(file_obj, sheet_name=None):
-    """Lecture Excel robuste: .xlsx/.xlsm/.xls.
-
-    pandas choisit généralement le bon moteur, mais on force xlrd pour .xls.
-    """
-    name = str(getattr(file_obj, "name", "") or "").lower()
-    if name.endswith(".xls"):
-        return pd.read_excel(file_obj, sheet_name=sheet_name, engine="xlrd")
-    return pd.read_excel(file_obj, sheet_name=sheet_name)
-
-
 st.set_page_config(page_title="Gestion cuisine centrale", layout="wide")
 set_background()
 
@@ -252,13 +238,8 @@ with st.sidebar:
                 key="cfg_coeffs",
             )
             if st.button("Enregistrer les coefficients", key="save_coeffs"):
-                try:
-                    store.save_coefficients(dfc_edit.to_dict("records"))
-                    st.success("Coefficients enregistrés.")
-                except Exception as e:
-                    st.error("❌ Impossible d'enregistrer les coefficients (écriture disque).")
-                    st.caption(f"Dossier config: {store.info().get('base_dir','')}")
-                    st.code(repr(e))
+                store.save_coefficients(dfc_edit.to_dict("records"))
+                st.success("Coefficients enregistrés.")
 
         with ctab2:
             dfu = pd.DataFrame({"unit": units})
@@ -270,13 +251,8 @@ with st.sidebar:
                 key="cfg_units",
             )
             if st.button("Enregistrer les unités", key="save_units"):
-                try:
-                    store.save_units([u for u in dfu_edit["unit"].astype(str).tolist() if u.strip()])
-                    st.success("Unités enregistrées.")
-                except Exception as e:
-                    st.error("❌ Impossible d'enregistrer les unités (écriture disque).")
-                    st.caption(f"Dossier config: {store.info().get('base_dir','')}")
-                    st.code(repr(e))
+                store.save_units([u for u in dfu_edit["unit"].astype(str).tolist() if u.strip()])
+                st.success("Unités enregistrées.")
 
         with ctab3:
             # ✅ IMPORTANT : forcer les colonnes même si suppliers est vide,
@@ -317,13 +293,8 @@ with st.sidebar:
                 # ✅ On vire les lignes "vides" (sans nom)
                 recs = dfs_edit.fillna("").to_dict("records")
                 recs = [r for r in recs if str(r.get("name", "")).strip()]
-                try:
-                    store.save_suppliers(recs)
-                    st.success("Fournisseurs enregistrés.")
-                except Exception as e:
-                    st.error("❌ Impossible d'enregistrer les fournisseurs (écriture disque).")
-                    st.caption(f"Dossier config: {store.info().get('base_dir','')}")
-                    st.code(repr(e))
+                store.save_suppliers(recs)
+                st.success("Fournisseurs enregistrés.")
 
 if not planning_file or not menu_file:
     st.info("Charge le planning et le menu pour afficher les tableaux et générer les documents.")
@@ -475,13 +446,13 @@ try:
                 "2) Ré-uploade le fichier ici pour générer 1 bon par fournisseur."
             )
             bc_filled = st.file_uploader(
-                "Bon de commande rempli (.xlsx/.xls)", type=["xlsx","xlsm","xls"], key="bc_filled"
+                "Bon de commande rempli (.xlsx)", type=["xlsx","xlsm"], key="bc_filled"
             )
             if bc_filled is not None:
                 try:
-                    df_filled = _read_excel_any(bc_filled, sheet_name="Bon de commande")
+                    df_filled = pd.read_excel(bc_filled, sheet_name="Bon de commande")
                 except Exception:
-                    df_filled = _read_excel_any(bc_filled)
+                    df_filled = pd.read_excel(bc_filled)
 
                 out_xlsx = _temp_out_path(".xlsx")
                 out_pdf = _temp_out_path(".pdf")
@@ -663,27 +634,6 @@ try:
                         file_name="Facturation.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
-
-        with st.expander("🗑️ Suppression (facturation) — semaines / lignes", expanded=False):
-            st.warning(
-                "Zone sensible : ici tu peux supprimer des données mémorisées. "
-                "Les exports Excel/PDF n'affectent pas la mémoire ; seule la suppression efface réellement."
-            )
-            if delete_billing_records is None:
-                st.error("La fonction de suppression n'est pas disponible dans cette version.")
-            else:
-                rec = load_records()
-                if rec.empty:
-                    st.info("Aucune donnée à supprimer.")
-                else:
-                    weeks = sorted({str(w) for w in rec.get("week_monday", "").astype(str).tolist() if str(w).strip()})
-                    sel_week = st.selectbox("Semaine à supprimer (lundi)", options=[""] + weeks, index=0)
-                    if st.button("Supprimer cette semaine", key="del_billing_week"):
-                        if not sel_week:
-                            st.error("Choisis un lundi de semaine.")
-                        else:
-                            n = delete_billing_records(week_monday=dt.date.fromisoformat(sel_week))
-                            st.success(f"✅ {n} ligne(s) supprimée(s) pour la semaine {sel_week}.")
 
         st.divider()
         st.markdown("### Importer une facturation corrigée (retour comptable)")
@@ -881,41 +831,6 @@ try:
             except Exception as e:
                 st.error("Erreur lors de la génération des PDF")
                 st.code(repr(e))
-
-        with st.expander("🗑️ Suppression (PDJ) — lignes / ajustements", expanded=False):
-            st.warning(
-                "Zone sensible : tu peux supprimer des lignes enregistrées. "
-                "Les exports Excel/PDF ne suppriment rien tout seuls."
-            )
-
-            if pdj_delete_records is None:
-                st.error("La fonction de suppression PDJ n'est pas disponible dans cette version.")
-            else:
-                cDel1, cDel2 = st.columns(2)
-                with cDel1:
-                    del_site = st.text_input("Filtre site (optionnel)", value="", key="pdj_del_site")
-                    del_source = st.text_input("Filtre référence/source (optionnel)", value="", key="pdj_del_source")
-                    del_kind = st.selectbox(
-                        "Filtre type (optionnel)",
-                        options=["", "commande", "manuel", "avoir_qty"],
-                        index=0,
-                        key="pdj_del_kind",
-                    )
-                with cDel2:
-                    st.caption("Supprime toutes les lignes correspondant aux filtres pour le mois sélectionné.")
-                    if st.button("Supprimer lignes PDJ", key="pdj_delete_btn"):
-                        n = pdj_delete_records(month=month, site=del_site, source=del_source, kind=del_kind)
-                        st.success(f"✅ {n} ligne(s) PDJ supprimée(s) (mois {month}).")
-
-            if pdj_delete_money_adjustments is None:
-                st.info("Suppression des ajustements € indisponible dans cette version.")
-            else:
-                st.divider()
-                st.caption("Ajustements en euros (avoirs/corrections) : suppression par mois et filtre site.")
-                del_site2 = st.text_input("Filtre site ajustements (€) (optionnel)", value="", key="pdj_del_site2")
-                if st.button("Supprimer ajustements €", key="pdj_delete_adj_btn"):
-                    n2 = pdj_delete_money_adjustments(month=month, site=del_site2)
-                    st.success(f"✅ {n2} ajustement(s) € supprimé(s) (mois {month}).")
 
     with tab_all:
         st.subheader("Tableaux allergènes (format EXACT)")
