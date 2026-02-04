@@ -64,6 +64,39 @@ DEFAULT_PRODUCTS: List[str] = [
 
 
 # -----------------------------------------------------------------------------
+# Détection "intelligente" du site (import bons)
+# -----------------------------------------------------------------------------
+
+
+# Mots-clés -> site. Tu peux enrichir ce mapping au fil du temps.
+# La valeur est ensuite normalisée par norm_site_facturation(...).
+SITE_KEYWORDS: Dict[str, str] = {
+    # Internat
+    "rosa bonheur": "24 ter",
+    "24 ter": "24 ter",
+    "24t": "24 ter",
+    "24 simple": "24 simple",
+    "internat": "Internat",
+    # MAS Toulouse-Lautrec
+    "mas toulouse": "MAS",
+    "toulouse lautrec": "MAS",
+    "lautrec": "MAS",
+}
+
+
+def guess_site_from_text(text: str, filename: str = "") -> str:
+    """Best-effort: devine le site depuis du texte (ou le nom de fichier)."""
+    blob = f"{text or ''} {filename or ''}".lower()
+    for k, v in SITE_KEYWORDS.items():
+        if k in blob:
+            return norm_site_facturation(v)
+    # fallback: si on voit 'MAS' quelque part
+    if re.search(r"\bmas\b", blob):
+        return norm_site_facturation("MAS")
+    return ""
+
+
+# -----------------------------------------------------------------------------
 # Storage
 # -----------------------------------------------------------------------------
 
@@ -252,6 +285,13 @@ def add_pdj_records(
     if "kind" not in df.columns:
         df["kind"] = "commande"
     df["kind"] = df["kind"].astype(str)
+
+    # Règle métier : un "avoir_qty" doit être stocké comme une quantité négative.
+    # Beaucoup de saisies se font en positif (ex: 5) mais cela représente un avoir.
+    # On force donc le signe.
+    mask_avoir = df["kind"].astype(str).str.lower().eq("avoir_qty")
+    if mask_avoir.any():
+        df.loc[mask_avoir, "qty"] = -df.loc[mask_avoir, "qty"].abs()
     if "comment" not in df.columns:
         df["comment"] = ""
     df["comment"] = df["comment"].astype(str)
@@ -647,6 +687,105 @@ def export_monthly_pdj_workbook(month: str, out_path: str) -> str:
     for k, w in widths.items():
         ws2.column_dimensions[k].width = w
 
+    # -----------------------------------------------------------------
+    # Onglets par site (modifiable) : 1 onglet = 1 site
+    # -----------------------------------------------------------------
+    sites = sorted(
+        set(detail.get("site", pd.Series(dtype=str)).dropna().astype(str).tolist())
+        | set(adj.get("site", pd.Series(dtype=str)).dropna().astype(str).tolist())
+    )
+
+    def _safe_sheet(name: str) -> str:
+        name = re.sub(r"[\[\]\*\?:\\/]", " ", str(name or "")).strip()
+        name = re.sub(r"\s+", " ", name)
+        if not name:
+            name = "Site"
+        # Excel limite 31 chars
+        return name[:31]
+
+    for site in sites:
+        s_detail = detail[detail["site"].astype(str) == str(site)].copy() if not detail.empty else pd.DataFrame()
+        s_adj = adj[adj["site"].astype(str) == str(site)].copy() if not adj.empty else pd.DataFrame()
+
+        sheet_name = _safe_sheet(f"Site - {site}")
+        # Evite doublons
+        if sheet_name in wb.sheetnames:
+            base = sheet_name[:28]
+            i = 2
+            while f"{base}_{i}" in wb.sheetnames:
+                i += 1
+            sheet_name = f"{base}_{i}"
+
+        wsS = wb.create_sheet(sheet_name)
+        wsS["A1"].value = f"Facturation PDJ — {month} — {site}"
+        wsS["A1"].font = Font(bold=True, size=13)
+        wsS.merge_cells("A1:E1")
+
+        # Tableau produits (pivot)
+        wsS.append(["Produit", "Qté", "Unité", "Prix unitaire", "Montant (€)"])
+        for c in range(1, 6):
+            cell = wsS.cell(row=2, column=c)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = border
+
+        if not s_detail.empty:
+            pivot = (
+                s_detail.groupby(["product", "unit", "unit_price"], as_index=False)[["qty", "amount_eur"]]
+                .sum()
+                .sort_values("amount_eur", ascending=False)
+            )
+            for r in pivot.itertuples(index=False):
+                wsS.append([
+                    getattr(r, "product", ""),
+                    float(getattr(r, "qty", 0.0) or 0.0),
+                    getattr(r, "unit", ""),
+                    float(getattr(r, "unit_price", 0.0) or 0.0),
+                    float(getattr(r, "amount_eur", 0.0) or 0.0),
+                ])
+        else:
+            wsS.append(["(Aucune ligne)", 0, "", 0.0, 0.0])
+
+        # Styles corps
+        for row in wsS.iter_rows(min_row=3, max_row=wsS.max_row, min_col=1, max_col=5):
+            for cell in row:
+                cell.border = border
+                if cell.column_letter in {"D", "E"}:
+                    cell.number_format = money_fmt
+                if cell.column_letter == "B":
+                    cell.number_format = "0.00"
+
+        wsS.column_dimensions["A"].width = 34
+        wsS.column_dimensions["B"].width = 10
+        wsS.column_dimensions["C"].width = 10
+        wsS.column_dimensions["D"].width = 14
+        wsS.column_dimensions["E"].width = 14
+
+        # Ajustements €
+        start_adj = wsS.max_row + 2
+        wsS.cell(row=start_adj, column=1, value="Ajustements (€)").font = Font(bold=True)
+        wsS.append(["Libellé", "Montant (€)", "Commentaire"])  # header adj
+        hrow = start_adj + 1
+        for c in range(1, 4):
+            cell = wsS.cell(row=hrow, column=c)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = border
+
+        if not s_adj.empty:
+            for r in s_adj[["label", "amount_eur", "comment"]].itertuples(index=False):
+                wsS.append([getattr(r, "label", ""), float(getattr(r, "amount_eur", 0.0) or 0.0), getattr(r, "comment", "")])
+        else:
+            wsS.append(["(Aucun)", 0.0, ""]) 
+
+        for row in wsS.iter_rows(min_row=hrow + 1, max_row=wsS.max_row, min_col=1, max_col=3):
+            for cell in row:
+                cell.border = border
+                if cell.column_letter == "B":
+                    cell.number_format = money_fmt
+
     # Ajustements monétaires
     ws3 = wb.create_sheet("Ajustements €")
     ws3.append(["date", "site", "label", "amount_eur", "comment"])
@@ -920,6 +1059,50 @@ def parse_pdj_excel(path_or_buffer) -> pd.DataFrame:
     return out[["product", "qty"]]
 
 
+def parse_pdj_file(path_or_buffer, *, filename: str = "") -> Tuple[str, pd.DataFrame]:
+    """Parse un bon PDJ (Excel/PDF) et retourne (site_devine, df_quantites).
+
+    - site_devine est vide si non détecté.
+    - df_quantites contient au moins: product, qty
+
+    Note : la sortie est conçue pour être **modifiable manuellement** ensuite.
+    """
+    name = filename or getattr(path_or_buffer, "name", "") or ""
+    low = name.lower()
+    if low.endswith((".xls", ".xlsx", ".xlsm")):
+        df = parse_pdj_excel(path_or_buffer)
+        # Excel: tente de lire le nom de site depuis les 1ères lignes si possible
+        site = ""
+        try:
+            head = pd.read_excel(path_or_buffer, sheet_name=0, header=None, nrows=12)
+            header_text = " ".join([str(x) for x in head.stack().dropna().tolist()])
+            site = guess_site_from_text(header_text, name)
+        except Exception:
+            site = guess_site_from_text("", name)
+        return site, df
+
+    if low.endswith(".pdf"):
+        # PDF: parse (OCR best-effort) + détection site sur OCR
+        df = parse_pdj_pdf(path_or_buffer)
+        site = ""
+        try:
+            # légère OCR sur page 1 pour détecter un site, même si quantités imparfaites
+            import pdfplumber
+            import pytesseract
+
+            with pdfplumber.open(path_or_buffer) as pdf:
+                if pdf.pages:
+                    img = pdf.pages[0].to_image(resolution=200).original
+                    raw = pytesseract.image_to_string(img, lang="fra", config="--psm 6")
+                    site = guess_site_from_text(raw, name)
+        except Exception:
+            site = guess_site_from_text("", name)
+        return site, df
+
+    # inconnu
+    return "", pd.DataFrame(columns=["product", "qty"])
+
+
 def parse_pdj_pdf(path_or_buffer) -> pd.DataFrame:
     """Extraction *best-effort* (product, qty) depuis un PDF.
 
@@ -943,8 +1126,21 @@ def parse_pdj_pdf(path_or_buffer) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame(columns=["product", "qty"])
 
+    # Pré-traitement léger pour aider sur scans faibles contrastes.
     try:
-        raw = pytesseract.image_to_string(img, lang="eng", config="--psm 6")
+        from PIL import ImageOps, ImageEnhance
+
+        gray = ImageOps.grayscale(img)
+        gray = ImageEnhance.Contrast(gray).enhance(2.2)
+        gray = ImageEnhance.Sharpness(gray).enhance(1.6)
+        # seuillage doux
+        bw = gray.point(lambda x: 0 if x < 180 else 255, "1")
+        ocr_img = bw
+    except Exception:
+        ocr_img = img
+
+    try:
+        raw = pytesseract.image_to_string(ocr_img, lang="fra", config="--psm 6")
     except Exception:
         return pd.DataFrame(columns=["product", "qty"])
 
