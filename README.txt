@@ -1,41 +1,25 @@
-PDJ Add-on (sans détricoter le reste)
+PATCH PDJ (remplissage automatique + avoirs)
 
-Objectif
-- Ajouter une fonctionnalité "Facturation PDJ (économat)".
-- Ne pas toucher au graphisme ni aux autres fonctions existantes (seulement un ajout en bas de l'onglet "Facturation mensuelle").
+But: activer le pré-remplissage des quantités et du site à l'import d'un bon PDJ (Excel/PDF),
+SANS changer l'UI, ni les autres fonctions.
 
-Contenu du paquet
-- src/pdj_facturation.py
-- src/pdj_billing.py
-- app.py.patch (diff unifié: ajouts MINIMAUX dans app.py)
-- requirements.txt.patch (ajout de dépendances)
+Fichiers inclus:
+- Gestion-Cuisine/app.py
+- Gestion-Cuisine/src/pdj_billing.py
 
-IMPORTANT (pour éviter les conflits)
-- Ne merge pas un zip contenant .git.
-- Ne copie pas des dossiers .git ou __pycache__.
+⚠️ IMPORTANT (pour éviter les conflits)
+Si ton projet a déjà des marqueurs de merge (<<<<<<< ======= >>>>>>>) dans app.py ou src/pdj_billing.py,
+remplace ces fichiers en écrasant (copier/coller) avec ceux fournis ici.
 
-Installation (recommandée)
-1) Copie les 2 fichiers suivants dans TON projet, au même endroit:
-   - <ton_projet>/src/pdj_facturation.py
-   - <ton_projet>/src/pdj_billing.py
+Étapes recommandées:
+1) Fais une sauvegarde de tes fichiers actuels:
+   - app.py -> app.py.bak
+   - src/pdj_billing.py -> src/pdj_billing.py.bak
+2) Copie les fichiers du patch aux mêmes emplacements dans ton projet.
+3) Relance l'app.
 
-2) Applique les patches.
-   Si tu es sous git:
-     git apply app.py.patch
-     git apply requirements.txt.patch
-
-   Sinon, ouvre app.py et requirements.txt et copie/colle les ajouts visibles dans les patches.
-
-3) Installe les dépendances:
-   pip install -r requirements.txt
-
-4) Redémarre l'application.
-
-Détection du site par bon de commande
-- Excel: l'app lit le nom du site/établissement dans le titre (ex: "(24 TER)") et le mappe vers "Internat".
-- PDF: l'app OCR l'entête du document pour récupérer le site.
-- Si non détecté: fallback via le nom de fichier (lautrec/mas -> MAS ; 24T/24 TER/internat -> Internat).
-
-Dépannage
-- Si OCR PDF: la lecture manuscrite peut être imparfaite. Préférer les fichiers Excel quand possible.
-- Si erreur "poppler": sur Windows, pdf2image peut demander poppler. Dans ce cas, utilise soit les fichiers Excel, soit installe poppler.
+Résultat attendu:
+- Quand tu importes un bon PDJ (Excel/PDF), la table se pré-remplit (best-effort).
+- Le champ 'Site' se pré-remplit si détecté et si le champ était vide.
+- Rien n'empêche la correction manuelle (cas MAS).
+- Les enregistrements de type 'avoir_qty' sont toujours enregistrés en quantités négatives.
