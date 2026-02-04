@@ -66,6 +66,10 @@ def _import_or_stop():
         pdj_billing = importlib.import_module("src.pdj_billing")
         importlib.reload(pdj_billing)
 
+        # Import parseur PDJ (lecture bons PDF/Excel + OCR best-effort)
+        pdj_facturation = importlib.import_module("src.pdj_facturation")
+        importlib.reload(pdj_facturation)
+
         # Import allergènes
         learner = importlib.import_module("src.allergens.learner")
         importlib.reload(learner)
@@ -73,7 +77,7 @@ def _import_or_stop():
         generator = importlib.import_module("src.allergens.generator")
         importlib.reload(generator)
 
-        return processor, cs, order_forms, billing, pdj_billing, learner, generator
+        return processor, cs, order_forms, billing, pdj_billing, pdj_facturation, learner, generator
 
     except Exception as e:
         st.error("💥 Erreur lors d’un import (module src.*)")
@@ -82,7 +86,7 @@ def _import_or_stop():
         st.stop()
 
 
-processor, cs, order_forms, billing, pdj_billing, learner, generator = _import_or_stop()
+processor, cs, order_forms, billing, pdj_billing, pdj_facturation, learner, generator = _import_or_stop()
 
 # Exports processor
 parse_planning_fabrication = processor.parse_planning_fabrication
@@ -742,46 +746,57 @@ try:
         )
 
         st.caption(
-            "Saisie **modifiable** : une ligne = 1 produit. "
-            "Si tu importes un bon (Excel/PDF), l'app tente de **pré-remplir** les intitulés/quantités (best-effort), "
-            "puis tu corriges manuellement si besoin (ex: OCR MAS)."
+            "Tu peux saisir **manuellement** (mode fiable) : une ligne = 1 produit, "
+            "ou importer un bon (Excel/PDF) pour **pré-remplir** les quantités. "
+            "Quel que soit le résultat, tout reste **modifiable** manuellement (utile pour la MAS)."
         )
 
-        # Table de saisie pré-remplie (avec tentative de lecture du fichier si fourni)
+        # Table de saisie pré-remplie (avec pré-lecture best-effort)
         base_rows = pd.DataFrame({"product": pdj_default_products, "qty": 0.0})
+
         if pdj_file is not None:
             try:
-                # Sauvegarde temporaire du fichier uploadé
-                suffix = "." + pdj_file.name.split(".")[-1].lower()
-                tmp_path = _save_uploaded_file(pdj_file, suffix=suffix)
-                site_guess, parsed = pdj_billing.parse_pdj_document(tmp_path)
+                parsed = pdj_facturation.parse_pdj_order_file(pdj_file)
+                items = getattr(parsed, "items", []) or []
+                detected_site = getattr(parsed, "site", None)
 
-                # Pré-remplissage quantités par produit (match sur le libellé normalisé)
-                if parsed is not None and not parsed.empty:
-                    pmap = (
-                        parsed.assign(product=parsed["product"].astype(str).map(pdj_billing.norm_product))
-                        .groupby("product", as_index=False)["qty"].sum()
-                    )
-                    base_rows["product"] = base_rows["product"].astype(str).map(pdj_billing.norm_product)
-                    base_rows = base_rows.merge(pmap, on="product", how="left", suffixes=("", "_imp"))
-                    base_rows["qty"] = base_rows["qty_imp"].fillna(base_rows["qty"]).astype(float)
-                    base_rows = base_rows.drop(columns=["qty_imp"]) 
+                # Pré-remplissage du champ site si vide
+                if detected_site and not str(st.session_state.get("pdj_site", "")).strip():
+                    st.session_state["pdj_site"] = str(detected_site)
 
-                    # Ajoute les produits importés non présents dans la liste par défaut
-                    extra = pmap[~pmap["product"].isin(base_rows["product"])].copy()
-                    if not extra.empty:
-                        extra = extra.rename(columns={"qty": "qty"})
-                        base_rows = pd.concat([base_rows, extra], ignore_index=True)
+                # Pré-remplissage des quantités (matching souple)
+                def _k(s: str) -> str:
+                    return " ".join(str(s or "").strip().lower().split())
 
-                # Auto-remplissage du site si l'utilisateur n'a rien saisi
-                if site_guess and not str(st.session_state.get("pdj_site", "")).strip():
-                    st.session_state["pdj_site"] = site_guess
+                items_map = { _k(p): float(q) for (p, q) in items if p and q is not None }
+                used = set()
 
-                st.info(
-                    "📎 Bon importé : pré-remplissage effectué (à vérifier/corriger manuellement si besoin)."
-                )
+                # Remplit d'abord les produits déjà dans la liste
+                for i, prod in enumerate(list(base_rows["product"])):
+                    k = _k(prod)
+                    if k in items_map:
+                        base_rows.loc[i, "qty"] = items_map[k]
+                        used.add(k)
+                    else:
+                        # fallback: contient / ressemble (OCR)
+                        for kk, vv in items_map.items():
+                            if kk in k or k in kk:
+                                base_rows.loc[i, "qty"] = vv
+                                used.add(kk)
+                                break
+
+                # Ajoute les produits non reconnus dans la liste par défaut
+                extra = [(p, q) for (p, q) in items if _k(p) not in used]
+                if extra:
+                    extra_df = pd.DataFrame({"product": [p for p, _ in extra], "qty": [float(q) for _, q in extra]})
+                    base_rows = pd.concat([base_rows, extra_df], ignore_index=True)
+
+                msg = "📎 Bon importé : pré-remplissage effectué (à vérifier / corriger si besoin)."
+                if detected_site:
+                    msg += f" Site détecté : **{detected_site}**."
+                st.info(msg)
             except Exception as e:
-                st.warning("⚠️ Import PDJ : lecture automatique impossible, saisie manuelle requise.")
+                st.warning("📎 Bon importé, mais lecture automatique impossible. Saisie manuelle requise.")
                 st.code(repr(e))
         pdj_table = st.data_editor(
             base_rows,
