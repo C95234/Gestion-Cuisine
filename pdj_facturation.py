@@ -39,6 +39,24 @@ SITE_COL_NAMES = [
     "Internat",
 ]
 
+# --- Mots-clés -> site (doit correspondre à une colonne du modèle) ---
+# Objectif: détection robuste sans modifier l'UI.
+# Tu peux enrichir librement.
+SITE_KEYWORDS: Dict[str, str] = {
+    # MAS Toulouse-Lautrec
+    "toulouse lautrec": "MAS",
+    "lautrec": "MAS",
+    "mas": "MAS",
+
+    # Internat / sites internes (ex: Rosa Bonheur 24 TER)
+    "internat": "Internat",
+    "24 ter": "Internat",
+    "24t": "Internat",
+    "rosa bonheur": "Internat",
+    "léonard de vinci": "Internat",
+    "leonard de vinci": "Internat",
+}
+
 # Quelques normalisations de libellés (tu peux enrichir)
 ALIASES = {
     "yaourt nature": "Yaourt",
@@ -69,6 +87,27 @@ BAD_TOKENS = {
     "unité",
     "prix",
 }
+
+
+def _safe_float(x) -> Optional[float]:
+    """Convertit en float si possible, sinon None (gère virgule)."""
+    if x is None:
+        return None
+    try:
+        if isinstance(x, (int, float)) and pd.notna(x):
+            return float(x)
+    except Exception:
+        pass
+    s = str(x).strip()
+    if not s or s.lower() in {"nan", "none"}:
+        return None
+    m = re.fullmatch(r"\s*([0-9]+(?:[.,][0-9]+)?)\s*", s)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", "."))
+    except Exception:
+        return None
 
 
 @dataclass
@@ -107,14 +146,21 @@ def _read_any_file(f) -> Tuple[str, bytes]:
 
 def _detect_site_from_text(text: str, filename: str = "") -> Optional[str]:
     t = (text or "").lower() + " " + (filename or "").lower()
+    t = re.sub(r"\s+", " ", t).strip()
 
-    # Ajuste tes mots-clés ici
-    if "toulouse lautrec" in t or "lautrec" in t:
-        return "MAS"
-    if "mas" in t and "toulouse" in t:
-        return "MAS"
-    if "24t" in t or "24 ter" in t or "internat" in t:
-        return "Internat"
+    # 1) Dictionnaire de mots-clés -> site
+    for kw, site in SITE_KEYWORDS.items():
+        if kw and kw.lower() in t:
+            return site
+
+    # 2) Heuristiques supplémentaires (titres type "IME ..." / "MAS ...")
+    # Ex: "BON DE COMMANDE PETIT DEJEUNER MAS TOULOUSE LAUTREC"
+    m = re.search(r"\b(mas|ime)\s+([a-z0-9\-\"' ]{3,})", t, flags=re.I)
+    if m:
+        bloc = (m.group(0) or "").lower()
+        for kw, site in SITE_KEYWORDS.items():
+            if kw and kw.lower() in bloc:
+                return site
 
     return None
 
@@ -286,10 +332,23 @@ def _parse_items_from_ocr_text(text: str) -> List[Tuple[str, float]]:
 
 
 def _parse_excel(file_bytes: bytes, filename: str) -> ParsedOrder:
-    bio = io.BytesIO(file_bytes)
-    df = pd.read_excel(bio)
+    """Parse Excel.
 
-    header_text = " ".join([str(c) for c in df.columns])
+    Supporte 2 formats:
+    1) Tableau structuré avec en-têtes (Produit / Quantité...)
+    2) Modèle 'COMMANDE DES PETITS-DEJEUNERS' (sans en-têtes pandas):
+       - repère la section 'Ingrédients à commander'
+       - produit en col0, quantité en col1, commentaire en col2
+    """
+
+    bio = io.BytesIO(file_bytes)
+    # On lit d'abord en mode standard (avec en-tête).
+    try:
+        df = pd.read_excel(bio)
+    except Exception:
+        df = pd.DataFrame()
+
+    header_text = " ".join([str(c) for c in getattr(df, "columns", [])])
     site = _detect_site_from_text(header_text, filename)
 
     items: List[Tuple[str, float]] = []
@@ -306,7 +365,7 @@ def _parse_excel(file_bytes: bytes, filename: str) -> ParsedOrder:
             col_qty = cand
             break
 
-    if col_prod and col_qty:
+    if col_prod and col_qty and not df.empty:
         for _, r in df.iterrows():
             prod_raw = str(r.get(col_prod, "")).strip()
             if not prod_raw or prod_raw.lower() in BAD_TOKENS:
@@ -319,14 +378,58 @@ def _parse_excel(file_bytes: bytes, filename: str) -> ParsedOrder:
                 continue
             items.append((_normalize_product_name(prod_raw), qty))
     else:
-        # fallback colonnes produits -> valeurs numériques
-        for c in df.columns:
-            if isinstance(c, str) and c.strip():
-                s = df[c]
-                if pd.api.types.is_numeric_dtype(s):
-                    qty = float(s.fillna(0).sum())
-                    if qty > 0:
-                        items.append((_normalize_product_name(c), qty))
+        # Fallback 1: format 'COMMANDE DES PETITS-DEJEUNERS' (souvent sans en-têtes)
+        bio2 = io.BytesIO(file_bytes)
+        df2 = pd.read_excel(bio2, header=None)
+
+        header_blob = " ".join([str(x) for x in df2.head(25).stack().dropna().tolist()])
+        site = site or _detect_site_from_text(header_blob, filename)
+
+        # trouve la ligne 'Ingrédients à commander'
+        start_row = None
+        for i in range(len(df2)):
+            row = " ".join([str(x) for x in df2.iloc[i].fillna("").tolist()])
+            if "ingrédients" in row.lower() and "commander" in row.lower():
+                start_row = i + 1
+                break
+        if start_row is None:
+            start_row = 0
+
+        empty_streak = 0
+        for i in range(start_row, len(df2)):
+            prod = df2.iloc[i, 0] if df2.shape[1] > 0 else None
+            qty = df2.iloc[i, 1] if df2.shape[1] > 1 else None
+
+            prod_s = "" if pd.isna(prod) else str(prod).strip()
+            qty_n = _safe_float(qty)
+
+            if not prod_s and qty_n is None:
+                empty_streak += 1
+                if empty_streak >= 5:
+                    break
+                continue
+            empty_streak = 0
+
+            if prod_s.lower().startswith("autres"):
+                break
+            if not prod_s:
+                continue
+
+            if qty_n is None or qty_n <= 0:
+                # pas de quantité -> on ignore (mais tu peux enrichir si besoin)
+                continue
+
+            items.append((_normalize_product_name(prod_s), float(qty_n)))
+
+        # Fallback 2: colonnes numériques (rare)
+        if not items and not df.empty:
+            for c in df.columns:
+                if isinstance(c, str) and c.strip():
+                    s = df[c]
+                    if pd.api.types.is_numeric_dtype(s):
+                        qty = float(s.fillna(0).sum())
+                        if qty > 0:
+                            items.append((_normalize_product_name(c), qty))
 
     return ParsedOrder(filename=filename, site=site, items=items)
 
