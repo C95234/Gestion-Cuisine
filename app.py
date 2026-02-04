@@ -742,15 +742,30 @@ try:
         )
 
         st.caption(
-            "Saisie **manuelle** (mode fiable) : une ligne = 1 produit. "
-            "Astuce : laisse à 0 les produits non consommés. "
-            "Le fichier importé sert uniquement de pièce jointe / référence (pas de lecture OCR)."
+            "Import intelligent (best-effort) : l'app tente de pré-remplir les quantités et de deviner le site. "
+            "⚠️ Sur les PDF scannés (ex: MAS), l'OCR peut être imparfait : les données restent **modifiables manuellement** ci-dessous."
         )
 
-        # Table de saisie pré-remplie (sans OCR : plus robuste)
+        # Table de saisie pré-remplie (modifiable)
         base_rows = pd.DataFrame({"product": pdj_default_products, "qty": 0.0})
         if pdj_file is not None:
-            st.info("📎 Bon importé en référence. Renseigne les quantités manuellement ci-dessous.")
+            # Parse best-effort : remplit la table mais laisse toujours la main
+            try:
+                import io
+                buf = io.BytesIO(pdj_file.getvalue())
+                site_guess, parsed = pdj_billing.parse_pdj_file(buf, filename=getattr(pdj_file, "name", ""))
+                if site_guess:
+                    st.info(f"🏷️ Site détecté: **{site_guess}** (si besoin, copie/colle dans le champ Site ci-dessus)")
+                if parsed is not None and not parsed.empty:
+                    # Remplir base_rows par correspondance exacte sur le libellé normalisé
+                    pmap = {str(r.product).strip(): float(r.qty) for r in parsed.itertuples(index=False)}
+                    base_rows["qty"] = base_rows["product"].map(lambda p: pmap.get(str(p).strip(), 0.0))
+                    st.success("✅ Quantités pré-remplies depuis le bon. Vérifie et corrige si nécessaire.")
+                else:
+                    st.warning("⚠️ Impossible d'extraire des quantités automatiquement. Saisie manuelle requise.")
+            except Exception as e:
+                st.warning("⚠️ Import intelligent indisponible pour ce fichier. Saisie manuelle requise.")
+                st.code(repr(e))
         pdj_table = st.data_editor(
             base_rows,
             use_container_width=True,
