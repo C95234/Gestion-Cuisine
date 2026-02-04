@@ -252,6 +252,15 @@ def add_pdj_records(
     if "kind" not in df.columns:
         df["kind"] = "commande"
     df["kind"] = df["kind"].astype(str)
+
+    # Sécurité métier : un avoir en quantités doit être négatif.
+    # Beaucoup d'utilisateurs saisissent "5" au lieu de "-5".
+    try:
+        mask_avoir = df["kind"].str.lower().eq("avoir_qty")
+        if mask_avoir.any():
+            df.loc[mask_avoir, "qty"] = -df.loc[mask_avoir, "qty"].abs()
+    except Exception:
+        pass
     if "comment" not in df.columns:
         df["comment"] = ""
     df["comment"] = df["comment"].astype(str)
@@ -881,14 +890,25 @@ def parse_pdj_excel(path_or_buffer) -> pd.DataFrame:
     Cette fonction est volontairement "tolérante" : elle essaie quelques heuristiques
     sans casser si le format varie.
     """
-    try:
-        df = pd.read_excel(path_or_buffer, sheet_name=0)
-    except Exception:
+    def _try_read(*, header=None, engine=None) -> pd.DataFrame:
+        try:
+            return pd.read_excel(path_or_buffer, sheet_name=0, header=header, engine=engine)
+        except Exception:
+            return pd.DataFrame()
+
+    # 1) Lecture standard (table avec en-têtes)
+    df = _try_read(header=0)
+    if df.empty:
         # Tentative xls via xlrd si dispo
-        df = pd.read_excel(path_or_buffer, sheet_name=0, engine="xlrd")
+        df = _try_read(header=0, engine="xlrd")
 
     if df is None or df.empty:
-        return pd.DataFrame(columns=["product", "qty"])
+        # 2) Lecture "template" (bons PDJ avec cellules fusionnées / sans en-têtes utiles)
+        df_raw = _try_read(header=None)
+        if df_raw.empty:
+            df_raw = _try_read(header=None, engine="xlrd")
+        out2 = _parse_pdj_template_excel(df_raw)
+        return out2
 
     # Normalise en string
     cols = [str(c) for c in df.columns]
@@ -909,15 +929,136 @@ def parse_pdj_excel(path_or_buffer) -> pd.DataFrame:
     if col_qty is None and len(cols) >= 2:
         col_qty = cols[1]
 
-    out = pd.DataFrame({
-        "product": df[col_prod].astype(str),
-        "qty": pd.to_numeric(df[col_qty], errors="coerce") if col_qty in df.columns else 0,
-    })
+    out = pd.DataFrame(
+        {
+            "product": df[col_prod].astype(str),
+            "qty": pd.to_numeric(df[col_qty], errors="coerce") if col_qty in df.columns else 0,
+        }
+    )
     out["product"] = out["product"].map(norm_product)
     out["qty"] = pd.to_numeric(out["qty"], errors="coerce").fillna(0.0)
     out = out[out["product"].astype(str).str.strip() != ""].copy()
     out = out[out["qty"] != 0].copy()
-    return out[["product", "qty"]]
+    out = out[["product", "qty"]]
+    # Si la lecture standard ne donne rien, tente le mode template.
+    if out.empty:
+        df_raw = _try_read(header=None)
+        if df_raw.empty:
+            df_raw = _try_read(header=None, engine="xlrd")
+        return _parse_pdj_template_excel(df_raw)
+    return out
+
+
+def _parse_pdj_template_excel(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """Parse les bons PDJ "template" (souvent sans en-têtes tabulaires).
+
+    On cherche la zone "Ingrédients à commander" puis on lit:
+    - colonne A = produit
+    - colonne B = quantité
+    - colonne C = commentaire (optionnel)
+    """
+    if df_raw is None or df_raw.empty:
+        return pd.DataFrame(columns=["product", "qty"])
+
+    # Repère la ligne de départ
+    start_row = None
+    for i in range(len(df_raw)):
+        row = " ".join([str(x) for x in df_raw.iloc[i].fillna("").tolist()])
+        if "ingr" in row.lower() and "commander" in row.lower():
+            start_row = i + 1
+            break
+    if start_row is None:
+        # fallback : tente depuis le haut
+        start_row = 0
+
+    rows = []
+    empty_streak = 0
+    for i in range(start_row, len(df_raw)):
+        prod = df_raw.iloc[i, 0] if df_raw.shape[1] > 0 else None
+        qty = df_raw.iloc[i, 1] if df_raw.shape[1] > 1 else None
+
+        prod_s = "" if pd.isna(prod) else str(prod).strip()
+        if not prod_s and (qty is None or (isinstance(qty, float) and pd.isna(qty))):
+            empty_streak += 1
+            if empty_streak >= 6:
+                break
+            continue
+        empty_streak = 0
+
+        if prod_s.lower().startswith("autres"):
+            break
+        if not prod_s:
+            continue
+
+        q = pd.to_numeric(qty, errors="coerce")
+        if pd.isna(q) or float(q) == 0.0:
+            continue
+
+        rows.append({"product": norm_product(prod_s), "qty": float(q)})
+
+    if not rows:
+        return pd.DataFrame(columns=["product", "qty"])
+    return pd.DataFrame(rows)[["product", "qty"]]
+
+
+def _detect_site_from_text(text: str) -> str:
+    """Détection best-effort du site depuis un texte (Excel/PDF)."""
+    t = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+    if not t:
+        return ""
+    # Quelques heuristiques simples (tu peux enrichir en ajoutant des mots-clés)
+    if "toulouse" in t and "lautrec" in t:
+        return "MAS TOULOUSE LAUTREC"
+    if "rosa" in t and "bonheur" in t:
+        return "24 ter"
+    if "léonard" in t and "vinci" in t:
+        return 'internat simple "Léonard de Vinci"'
+    # IME ...
+    m = re.search(r"\bime\s*([^\n\r]+)", t, flags=re.I)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+
+def parse_pdj_document(path_or_buffer) -> Tuple[str, pd.DataFrame]:
+    """Parse un bon PDJ (Excel/PDF) et renvoie (site_guess, df(product,qty)).
+
+    Le résultat doit rester **modifiable manuellement** dans l'UI.
+    """
+    # Détection extension si on a un chemin
+    site_guess = ""
+    ext = ""
+    try:
+        if hasattr(path_or_buffer, "name"):
+            ext = str(path_or_buffer.name).lower()
+        elif isinstance(path_or_buffer, (str, Path)):
+            ext = str(path_or_buffer).lower()
+    except Exception:
+        ext = ""
+
+    if ext.endswith(".pdf"):
+        df = parse_pdj_pdf(path_or_buffer)
+        # Tente d'extraire du texte si possible
+        try:
+            import pdfplumber
+
+            with pdfplumber.open(path_or_buffer) as pdf:
+                text = "\n".join([p.extract_text() or "" for p in pdf.pages[:2]])
+            site_guess = _detect_site_from_text(text)
+        except Exception:
+            site_guess = ""
+        return site_guess, df
+    else:
+        # Excel
+        df = parse_pdj_excel(path_or_buffer)
+        # détection site dans les cellules hautes si possible
+        try:
+            df_raw = pd.read_excel(path_or_buffer, sheet_name=0, header=None)
+            header_text = " ".join([str(x) for x in df_raw.head(25).stack().dropna().tolist()])
+            site_guess = _detect_site_from_text(header_text)
+        except Exception:
+            site_guess = ""
+        return site_guess, df
 
 
 def parse_pdj_pdf(path_or_buffer) -> pd.DataFrame:
@@ -939,14 +1080,32 @@ def parse_pdj_pdf(path_or_buffer) -> pd.DataFrame:
         with pdfplumber.open(path_or_buffer) as pdf:
             if not pdf.pages:
                 return pd.DataFrame(columns=["product", "qty"])
-            img = pdf.pages[0].to_image(resolution=200).original
+            img = pdf.pages[0].to_image(resolution=250).original
     except Exception:
         return pd.DataFrame(columns=["product", "qty"])
 
+    # Pré-traitement image (contraste) pour améliorer l'OCR sur scans.
+    # Si Pillow n'est pas dispo, on fait sans.
     try:
-        raw = pytesseract.image_to_string(img, lang="eng", config="--psm 6")
+        from PIL import ImageOps, ImageFilter
+
+        g = img.convert("L")
+        g = ImageOps.autocontrast(g)
+        # léger renforcement
+        g = g.filter(ImageFilter.SHARPEN)
+        img_for_ocr = g
     except Exception:
-        return pd.DataFrame(columns=["product", "qty"])
+        img_for_ocr = img
+
+    # OCR en français (meilleur pour vos bons)
+    try:
+        raw = pytesseract.image_to_string(img_for_ocr, lang="fra", config="--psm 6")
+    except Exception:
+        # fallback si 'fra' non installé
+        try:
+            raw = pytesseract.image_to_string(img_for_ocr, lang="eng", config="--psm 6")
+        except Exception:
+            return pd.DataFrame(columns=["product", "qty"])
 
     lines = [" ".join(l.strip().split()) for l in (raw or "").splitlines() if l.strip()]
     if not lines:
