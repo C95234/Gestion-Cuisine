@@ -742,15 +742,47 @@ try:
         )
 
         st.caption(
-            "Saisie **manuelle** (mode fiable) : une ligne = 1 produit. "
-            "Astuce : laisse à 0 les produits non consommés. "
-            "Le fichier importé sert uniquement de pièce jointe / référence (pas de lecture OCR)."
+            "Saisie **modifiable** : une ligne = 1 produit. "
+            "Si tu importes un bon (Excel/PDF), l'app tente de **pré-remplir** les intitulés/quantités (best-effort), "
+            "puis tu corriges manuellement si besoin (ex: OCR MAS)."
         )
 
-        # Table de saisie pré-remplie (sans OCR : plus robuste)
+        # Table de saisie pré-remplie (avec tentative de lecture du fichier si fourni)
         base_rows = pd.DataFrame({"product": pdj_default_products, "qty": 0.0})
         if pdj_file is not None:
-            st.info("📎 Bon importé en référence. Renseigne les quantités manuellement ci-dessous.")
+            try:
+                # Sauvegarde temporaire du fichier uploadé
+                suffix = "." + pdj_file.name.split(".")[-1].lower()
+                tmp_path = _save_uploaded_file(pdj_file, suffix=suffix)
+                site_guess, parsed = pdj_billing.parse_pdj_document(tmp_path)
+
+                # Pré-remplissage quantités par produit (match sur le libellé normalisé)
+                if parsed is not None and not parsed.empty:
+                    pmap = (
+                        parsed.assign(product=parsed["product"].astype(str).map(pdj_billing.norm_product))
+                        .groupby("product", as_index=False)["qty"].sum()
+                    )
+                    base_rows["product"] = base_rows["product"].astype(str).map(pdj_billing.norm_product)
+                    base_rows = base_rows.merge(pmap, on="product", how="left", suffixes=("", "_imp"))
+                    base_rows["qty"] = base_rows["qty_imp"].fillna(base_rows["qty"]).astype(float)
+                    base_rows = base_rows.drop(columns=["qty_imp"]) 
+
+                    # Ajoute les produits importés non présents dans la liste par défaut
+                    extra = pmap[~pmap["product"].isin(base_rows["product"])].copy()
+                    if not extra.empty:
+                        extra = extra.rename(columns={"qty": "qty"})
+                        base_rows = pd.concat([base_rows, extra], ignore_index=True)
+
+                # Auto-remplissage du site si l'utilisateur n'a rien saisi
+                if site_guess and not str(st.session_state.get("pdj_site", "")).strip():
+                    st.session_state["pdj_site"] = site_guess
+
+                st.info(
+                    "📎 Bon importé : pré-remplissage effectué (à vérifier/corriger manuellement si besoin)."
+                )
+            except Exception as e:
+                st.warning("⚠️ Import PDJ : lecture automatique impossible, saisie manuelle requise.")
+                st.code(repr(e))
         pdj_table = st.data_editor(
             base_rows,
             use_container_width=True,
