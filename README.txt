@@ -1,25 +1,17 @@
-PATCH PDJ (remplissage automatique + avoirs)
+GENERATEUR DE BON DE COMMANDE - VERSION PORTABLE WINDOWS
 
-But: activer le pré-remplissage des quantités et du site à l'import d'un bon PDJ (Excel/PDF),
-SANS changer l'UI, ni les autres fonctions.
+ETAPES (UNE SEULE FOIS) :
+1) Dezippez ce dossier
+2) Double-cliquez sur build_exe.bat
+3) Attendez la fin (1 a 3 minutes)
 
-Fichiers inclus:
-- Gestion-Cuisine/app.py
-- Gestion-Cuisine/src/pdj_billing.py
+RESULTAT :
+Un dossier dist/GenerateurBonCommande contenant :
+- GenerateurBonCommande.exe
 
-⚠️ IMPORTANT (pour éviter les conflits)
-Si ton projet a déjà des marqueurs de merge (<<<<<<< ======= >>>>>>>) dans app.py ou src/pdj_billing.py,
-remplace ces fichiers en écrasant (copier/coller) avec ceux fournis ici.
+UTILISATION :
+- Copiez ce dossier sur n'importe quel PC Windows 10/11
+- Double-cliquez sur l'exe
+- L'application s'ouvre dans le navigateur
 
-Étapes recommandées:
-1) Fais une sauvegarde de tes fichiers actuels:
-   - app.py -> app.py.bak
-   - src/pdj_billing.py -> src/pdj_billing.py.bak
-2) Copie les fichiers du patch aux mêmes emplacements dans ton projet.
-3) Relance l'app.
-
-Résultat attendu:
-- Quand tu importes un bon PDJ (Excel/PDF), la table se pré-remplit (best-effort).
-- Le champ 'Site' se pré-remplit si détecté et si le champ était vide.
-- Rien n'empêche la correction manuelle (cas MAS).
-- Les enregistrements de type 'avoir_qty' sont toujours enregistrés en quantités négatives.
+Aucun Python ou Streamlit requis sur les autres PC.
