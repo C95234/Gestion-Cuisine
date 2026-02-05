@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
@@ -43,6 +45,21 @@ class ConfigStore:
 
         if base_dir is not None:
             candidates.append(Path(base_dir))
+
+        # Cas "portable" (exécutable packagé) : dossier config à côté de l'exe
+        try:
+            if getattr(sys, "frozen", False):
+                candidates.append(Path(sys.executable).resolve().parent / "config")
+        except Exception:
+            pass
+
+        # Windows : privilégier APPDATA (stable, writable)
+        try:
+            appdata = os.environ.get("APPDATA")
+            if appdata:
+                candidates.append(Path(appdata) / "gestion-cuisine" / "config")
+        except Exception:
+            pass
 
         candidates.append(Path.home() / ".gestion-cuisine" / "config")
         candidates.append(Path("/tmp") / "gestion-cuisine" / "config")
@@ -175,10 +192,24 @@ class ConfigStore:
             return default
 
     def _safe_save(self, path: Path, data: Any) -> None:
-        try:
-            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+        """Sauvegarde atomique.
+
+        IMPORTANT : on ne masque plus silencieusement les erreurs, sinon l'utilisateur
+        pense que tout est mémorisé alors que rien n'est écrit.
+        """
+        # Sauvegarde atomique (évite un fichier JSON corrompu en cas de veille/coupure)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+
+    # Public helper (diagnostic)
+    def info(self) -> Dict[str, str]:
+        return {
+            "base_dir": str(self.base_dir),
+            "coefficients": str(self._coeff_path),
+            "units": str(self._units_path),
+            "suppliers": str(self._suppliers_path),
+        }
 
 
 # Expose explicit public API for `from src.config_store import ConfigStore`
