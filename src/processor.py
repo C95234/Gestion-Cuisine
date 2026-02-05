@@ -21,6 +21,7 @@ from reportlab.pdfgen import canvas
 DAY_NAMES = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
 
 
+
 # --- Définitions défensives pour éviter des NameError à l'import ---
 # Certains environnements (ou merges/patchs) ont pu laisser du code exécuté au chargement du module.
 # On initialise donc des variables globales utilisées par sécurité; elles seront recalculées dans les fonctions.
