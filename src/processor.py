@@ -1630,7 +1630,11 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
         grouped["Unité"] = "unité"
         grouped["Fournisseur"] = ""
         grouped["Libellé"] = grouped["Produit"].astype(str)
-        return grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Libellé", "Effectif", "Coefficient", "Unité", "Fournisseur", "Quantité"]].sort_values(
+        grouped["Poids unitaire (kg)"] = ""
+        grouped["Poids total (kg)"] = ""
+        grouped["Prix cible unitaire"] = ""
+        grouped["Prix cible total"] = ""
+        return grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Libellé", "Effectif", "Coefficient", "Unité", "Fournisseur", "Poids unitaire (kg)", "Poids total (kg)", "Prix cible unitaire", "Prix cible total", "Quantité"]].sort_values(
             ["Repas", "Typologie", "Produit"]
         ).reset_index(drop=True)
 
@@ -1722,7 +1726,16 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
     if "Libellé" not in grouped.columns:
         grouped["Libellé"] = grouped["Produit"].astype(str)
 
-    grouped = grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Libellé", "Effectif", "Coefficient", "Unité", "Fournisseur", "Quantité"]]
+    if "Poids unitaire (kg)" not in grouped.columns:
+        grouped["Poids unitaire (kg)"] = ""
+    if "Poids total (kg)" not in grouped.columns:
+        grouped["Poids total (kg)"] = ""
+    if "Prix cible unitaire" not in grouped.columns:
+        grouped["Prix cible unitaire"] = ""
+    if "Prix cible total" not in grouped.columns:
+        grouped["Prix cible total"] = ""
+
+    grouped = grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Libellé", "Effectif", "Coefficient", "Unité", "Fournisseur", "Poids unitaire (kg)", "Poids total (kg)", "Prix cible unitaire", "Prix cible total", "Quantité"]]
     return grouped.sort_values(["Repas", "Typologie", "Produit"]).reset_index(drop=True)
 
 
@@ -1962,6 +1975,34 @@ def export_excel(
                 )
                 # optionnel: format numérique propre
                 ws_bc.cell(row=r, column=col_qty).number_format = "0"
+
+        # ----------------- Formules Poids & Prix cible -----------------
+        # Poids total (kg) = Quantité * Poids unitaire (kg)
+        # Prix cible total = Quantité * Prix cible unitaire
+        col_pu = headers.get("poids unitaire (kg)") or headers.get("poids unitaire")
+        col_pt = headers.get("poids total (kg)") or headers.get("poids total")
+        col_prix_u = headers.get("prix cible unitaire") or headers.get("prix unitaire cible")
+        col_prix_t = headers.get("prix cible total") or headers.get("prix total cible")
+
+        if col_qty and col_pu and col_pt:
+            qty_letter = openpyxl.utils.get_column_letter(col_qty)
+            pu_letter = openpyxl.utils.get_column_letter(col_pu)
+            pt_letter = openpyxl.utils.get_column_letter(col_pt)
+            for r in range(2, ws_bc.max_row + 1):
+                ws_bc.cell(row=r, column=col_pt).value = (
+                    f"=IFERROR({qty_letter}{r}*{pu_letter}{r},\"\")"
+                )
+                ws_bc.cell(row=r, column=col_pt).number_format = "0.00"
+
+        if col_qty and col_prix_u and col_prix_t:
+            qty_letter = openpyxl.utils.get_column_letter(col_qty)
+            prixu_letter = openpyxl.utils.get_column_letter(col_prix_u)
+            for r in range(2, ws_bc.max_row + 1):
+                ws_bc.cell(row=r, column=col_prix_t).value = (
+                    f"=IFERROR({qty_letter}{r}*{prixu_letter}{r},0)"
+                )
+                ws_bc.cell(row=r, column=col_prix_t).number_format = "#,##0.00"
+
 
         # ----------------- Styles -----------------
         thin = Side(style="thin", color="9E9E9E")
