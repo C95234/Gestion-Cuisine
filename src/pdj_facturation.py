@@ -12,12 +12,7 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 # PDF -> image
-try:
-    import fitz  # pymupdf
-    PYMUPDF_AVAILABLE = True
-except Exception:
-    fitz = None
-    PYMUPDF_AVAILABLE = False
+import fitz  # pymupdf
 from PIL import Image, ImageOps, ImageEnhance
 # OCR (requis pour PDF scanné)
 import pytesseract
