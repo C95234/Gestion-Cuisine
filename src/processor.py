@@ -1630,7 +1630,12 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
         grouped["Unité"] = "unité"
         grouped["Fournisseur"] = ""
         grouped["Libellé"] = grouped["Produit"].astype(str)
-        return grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Libellé", "Effectif", "Coefficient", "Unité", "Fournisseur", "Quantité"]].sort_values(
+        grouped["Prix cible unitaire"] = ""
+        grouped["Prix cible total"] = ""
+        grouped["Poids unitaire (kg)"] = ""
+        grouped["Poids total (kg)"] = ""
+        grouped["Livraison"] = ""
+        return grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Libellé", "Effectif", "Coefficient", "Unité", "Fournisseur", "Quantité", "Prix cible unitaire", "Prix cible total", "Poids unitaire (kg)", "Poids total (kg)", "Livraison"]].sort_values(
             ["Repas", "Typologie", "Produit"]
         ).reset_index(drop=True)
 
@@ -1722,7 +1727,13 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
     if "Libellé" not in grouped.columns:
         grouped["Libellé"] = grouped["Produit"].astype(str)
 
-    grouped = grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Libellé", "Effectif", "Coefficient", "Unité", "Fournisseur", "Quantité"]]
+    grouped["Prix cible unitaire"] = ""
+    grouped["Prix cible total"] = ""
+    grouped["Poids unitaire (kg)"] = ""
+    grouped["Poids total (kg)"] = ""
+    grouped["Livraison"] = ""
+
+    grouped = grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Libellé", "Effectif", "Coefficient", "Unité", "Fournisseur", "Quantité", "Prix cible unitaire", "Prix cible total", "Poids unitaire (kg)", "Poids total (kg)", "Livraison"]]
     return grouped.sort_values(["Repas", "Typologie", "Produit"]).reset_index(drop=True)
 
 
@@ -1962,6 +1973,31 @@ def export_excel(
                 )
                 # optionnel: format numérique propre
                 ws_bc.cell(row=r, column=col_qty).number_format = "0"
+
+
+        # ----------------- Formules Prix/Poids (cibles) -----------------
+        # Prix cible total = Quantité * Prix cible unitaire (si les 2 sont renseignés)
+        # Poids total (kg) = Quantité * Poids unitaire (kg) (si les 2 sont renseignés)
+        col_pu = headers.get("prix cible unitaire")
+        col_pt = headers.get("prix cible total")
+        col_wu = headers.get("poids unitaire (kg)") or headers.get("poids unitaire")
+        col_wt = headers.get("poids total (kg)") or headers.get("poids total")
+        if col_qty and col_pu and col_pt:
+            qty_letter = openpyxl.utils.get_column_letter(col_qty)
+            pu_letter = openpyxl.utils.get_column_letter(col_pu)
+            for r in range(2, ws_bc.max_row + 1):
+                ws_bc.cell(row=r, column=col_pt).value = (
+                    f'=IF(OR({qty_letter}{r}="",{pu_letter}{r}=""),"",{qty_letter}{r}*{pu_letter}{r})'
+                )
+                ws_bc.cell(row=r, column=col_pt).number_format = '#,##0.00'
+        if col_qty and col_wu and col_wt:
+            qty_letter = openpyxl.utils.get_column_letter(col_qty)
+            wu_letter = openpyxl.utils.get_column_letter(col_wu)
+            for r in range(2, ws_bc.max_row + 1):
+                ws_bc.cell(row=r, column=col_wt).value = (
+                    f'=IF(OR({qty_letter}{r}="",{wu_letter}{r}=""),"",{qty_letter}{r}*{wu_letter}{r})'
+                )
+                ws_bc.cell(row=r, column=col_wt).number_format = '#,##0.000'
 
         # ----------------- Styles -----------------
         thin = Side(style="thin", color="9E9E9E")
