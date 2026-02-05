@@ -18,10 +18,14 @@ from reportlab.pdfgen import canvas
 DAY_NAMES = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
 
 
-
-# Défaut défensif : certains patchs/conflits peuvent déplacer du code de post-traitement au niveau module.
-# En définissant `headers` ici, on évite un NameError à l'import (Streamlit). Le mapping réel est recalculé dans export_excel().
+# --- Définitions défensives pour éviter des NameError à l'import ---
+# Certains environnements (ou merges/patchs) ont pu laisser du code exécuté au chargement du module.
+# On initialise donc des variables globales utilisées par sécurité; elles seront recalculées dans les fonctions.
 headers: Dict[str, int] = {}
+col_eff = col_coef = col_unit = col_sup = col_qty = None
+ws_bc = None
+
+
 def clean_text(x) -> str:
     """Normalize cell content into a clean string."""
     if x is None:
