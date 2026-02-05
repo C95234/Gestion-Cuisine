@@ -105,7 +105,6 @@ parse_menu = processor.parse_menu
 build_bon_commande = processor.build_bon_commande
 export_excel = processor.export_excel
 export_bons_livraison_pdf = processor.export_bons_livraison_pdf
-assign_deliveries_by_weight = getattr(processor, "assign_deliveries_by_weight", None)
 
 # ConfigStore
 ConfigStore = cs.ConfigStore
@@ -271,7 +270,7 @@ with st.sidebar:
                 except Exception as e:
                     st.error("❌ Impossible d'enregistrer les coefficients (écriture disque).")
                     st.caption(f"Dossier config: {store.info().get('base_dir','')}")
-                st.code(repr(e))
+                    st.code(repr(e))
 
         with ctab2:
             dfu = pd.DataFrame({"unit": units})
@@ -289,7 +288,7 @@ with st.sidebar:
                 except Exception as e:
                     st.error("❌ Impossible d'enregistrer les unités (écriture disque).")
                     st.caption(f"Dossier config: {store.info().get('base_dir','')}")
-                st.code(repr(e))
+                    st.code(repr(e))
 
         with ctab3:
             # ✅ IMPORTANT : forcer les colonnes même si suppliers est vide,
@@ -336,7 +335,7 @@ with st.sidebar:
                 except Exception as e:
                     st.error("❌ Impossible d'enregistrer les fournisseurs (écriture disque).")
                     st.caption(f"Dossier config: {store.info().get('base_dir','')}")
-                st.code(repr(e))
+                    st.code(repr(e))
 
 if not planning_file or not menu_file:
     st.info("Charge le planning et le menu pour afficher les tableaux et générer les documents.")
@@ -495,30 +494,6 @@ try:
                     df_filled = _read_excel_any(bc_filled, sheet_name="Bon de commande")
                 except Exception:
                     df_filled = _read_excel_any(bc_filled)
-
-                st.markdown("**Répartition livraisons (optionnel)**")
-                colA, colB = st.columns([1, 2])
-                with colA:
-                    max_kg = st.number_input("Poids max par livraison (kg)", min_value=1.0, value=50.0, step=1.0)
-                with colB:
-                    deliveries_txt = st.text_input(
-                        "Livraisons (dates/libellés, séparés par des virgules)",
-                        value="Livraison 1, Livraison 2",
-                    )
-                delivery_labels = [d.strip() for d in str(deliveries_txt).split(",") if d.strip()]
-
-                # Si une colonne Livraison est déjà remplie dans l'Excel, elle est conservée.
-                if assign_deliveries_by_weight is not None and delivery_labels:
-                    try:
-                        df_assigned, summary_del = assign_deliveries_by_weight(
-                            df_filled, delivery_labels, max_kg=float(max_kg)
-                        )
-                        df_filled = df_assigned
-                        if summary_del is not None and not summary_del.empty:
-                            st.caption("Résumé (poids & prix cible) par livraison :")
-                            st.dataframe(summary_del, use_container_width=True, hide_index=True)
-                    except Exception as _e:
-                        st.warning(f"Impossible d'auto-répartir les livraisons : {_e}")
 
                 out_xlsx = _temp_out_path(".xlsx")
                 out_pdf = _temp_out_path(".pdf")
@@ -832,6 +807,7 @@ try:
             except Exception as e:
                 st.warning("📎 Bon importé, mais lecture automatique impossible. Saisie manuelle requise.")
                 st.code(repr(e))
+
         pdj_table = st.data_editor(
             base_rows,
             use_container_width=True,
