@@ -1,0 +1,718 @@
+from __future__ import annotations
+
+import datetime as dt
+import json
+import re
+import uuid
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+import pandas as pd
+import openpyxl
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+
+
+# -----------------------------
+# Storage
+# -----------------------------
+
+def _data_dir() -> Path:
+    """Local persistent folder (next to the app) to store weekly saved plannings."""
+    base = Path(__file__).resolve().parent.parent
+    d = base / "data" / "facturation"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _records_path() -> Path:
+    return _data_dir() / "records.csv"
+
+
+def _meta_path() -> Path:
+    return _data_dir() / "meta.json"
+
+
+def _read_meta() -> dict:
+    p = _meta_path()
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_meta(meta: dict) -> None:
+    _meta_path().write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# -----------------------------
+# Normalization helpers
+# -----------------------------
+
+def _norm(s: str) -> str:
+    return (str(s or "")).strip().lower()
+
+
+def norm_site_facturation(site: str) -> str:
+    """Business rule: '24 ter' + '24 simple' must be billed as a single column 'Internat'."""
+    s0 = str(site or "").strip()
+    sN = _norm(s0)
+
+    if re.fullmatch(r"24\s*(ter|simple)", sN):
+        return "Internat"
+    if sN in {"24ter", "24simple"}:
+        return "Internat"
+    if "24" in sN and ("ter" in sN or "simple" in sN):
+        return "Internat"
+
+    return s0
+
+
+def is_pdj_regime(regime: str) -> bool:
+    r = _norm(regime)
+    return ("pdj" in r) or ("petit" in r and "dej" in r) or ("gouter" in r) or ("goûter" in r)
+
+
+def is_mixe_lisse_regime(regime: str) -> bool:
+    r = _norm(regime)
+    return ("mixe" in r) or ("mixé" in r) or ("lisse" in r) or ("m/l" in r) or ("ml" == r)
+
+
+# -----------------------------
+# Planning conversion
+# -----------------------------
+
+def planning_to_daily_totals(
+    dej: pd.DataFrame,
+    din: pd.DataFrame,
+    week_monday: dt.date,
+    *,
+    exclude_pdj: bool = True,
+    exclude_mixe_lisse: bool = True,
+) -> pd.DataFrame:
+    """
+    Convert planning fabrication (déjeuner + dîner) into day-level totals per site.
+    Output columns: date, site, qty_repas
+    """
+    def _one(df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["Site", "Regime", "Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"])
+        return df.copy()
+
+    dej = _one(dej)
+    din = _one(din)
+
+    df = pd.concat([dej, din], ignore_index=True)
+
+    if df.empty:
+        return pd.DataFrame(columns=["date", "site", "qty_repas"])
+
+    mask = pd.Series([True] * len(df))
+    if exclude_pdj and "Regime" in df.columns:
+        mask &= ~df["Regime"].astype(str).map(is_pdj_regime)
+    if exclude_mixe_lisse and "Regime" in df.columns:
+        mask &= ~df["Regime"].astype(str).map(is_mixe_lisse_regime)
+
+    df = df.loc[mask].copy()
+
+    day_cols = [c for c in ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"] if c in df.columns]
+
+    melted = df.melt(id_vars=["Site"], value_vars=day_cols, var_name="day_name", value_name="qty")
+    melted["qty"] = pd.to_numeric(melted["qty"], errors="coerce").fillna(0).astype(int)
+
+    day_index = {name: i for i, name in enumerate(["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"])}
+    melted["date"] = melted["day_name"].map(lambda d: week_monday + dt.timedelta(days=day_index.get(d, 0)))
+    melted = melted.drop(columns=["day_name"])
+
+    out = melted.groupby(["date", "Site"], as_index=False)["qty"].sum()
+    out = out.rename(columns={"Site": "site", "qty": "qty_repas"})
+    return out
+
+
+def mixe_lisse_to_daily_totals(
+    dej: Optional[pd.DataFrame],
+    din: Optional[pd.DataFrame],
+    week_monday: dt.date,
+) -> pd.DataFrame:
+    """
+    Convert planning mixé/lissé (déjeuner + dîner) into day-level totals per site.
+    Output columns: date, site, qty_ml
+    """
+    frames = []
+    for df in (dej, din):
+        if df is not None and not df.empty:
+            frames.append(df.copy())
+    if not frames:
+        return pd.DataFrame(columns=["date", "site", "qty_ml"])
+    df = pd.concat(frames, ignore_index=True)
+
+    day_cols = [c for c in ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"] if c in df.columns]
+    melted = df.melt(id_vars=["Site"], value_vars=day_cols, var_name="day_name", value_name="qty")
+    melted["qty"] = pd.to_numeric(melted["qty"], errors="coerce").fillna(0).astype(int)
+
+    day_index = {name: i for i, name in enumerate(["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"])}
+    melted["date"] = melted["day_name"].map(lambda d: week_monday + dt.timedelta(days=day_index.get(d, 0)))
+
+    out = melted.groupby(["date", "Site"], as_index=False)["qty"].sum()
+    out = out.rename(columns={"Site": "site", "qty": "qty_ml"})
+    return out
+
+
+# -----------------------------
+# Persist / load
+# -----------------------------
+
+def save_week(
+    *,
+    week_monday: dt.date,
+    repas_daily: pd.DataFrame,
+    ml_daily: pd.DataFrame,
+    source_filename: str = "",
+) -> Tuple[int, int]:
+    """
+    Append records for a week into storage (idempotent per date+site).
+    Returns (n_repas, n_ml) saved rows.
+    """
+    def _norm_df(df: pd.DataFrame, qty_col: str, category: str) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["date","site","category","qty","week_monday","source"])
+        out = df.copy()
+        out["date"] = pd.to_datetime(out["date"]).dt.date
+        out["site"] = out["site"].astype(str).map(norm_site_facturation)
+        out["category"] = category
+        out["qty"] = pd.to_numeric(out[qty_col], errors="coerce").fillna(0).astype(int)
+        out["week_monday"] = week_monday.isoformat()
+        out["source"] = source_filename
+        out["record_id"] = [str(uuid.uuid4()) for _ in range(len(out))]
+        return out[["record_id","date","site","category","qty","week_monday","source"]]
+
+    a = _norm_df(repas_daily, "qty_repas", "repas")
+    b = _norm_df(ml_daily, "qty_ml", "mixe_lisse")
+    new = pd.concat([a, b], ignore_index=True)
+
+    p = _records_path()
+    if p.exists():
+        old = pd.read_csv(p, parse_dates=["date"])
+        old["date"] = pd.to_datetime(old["date"]).dt.date
+    else:
+        old = pd.DataFrame(columns=["record_id","date","site","category","qty","week_monday","source"])
+
+    week_dates = {week_monday + dt.timedelta(days=i) for i in range(7)}
+    mask_keep = ~(
+        old["date"].isin(list(week_dates))
+        & old["category"].isin(["repas","mixe_lisse"])
+    )
+    old = old.loc[mask_keep].copy()
+
+    merged = pd.concat([old, new], ignore_index=True)
+    merged.to_csv(p, index=False)
+
+    meta = _read_meta()
+    meta.setdefault("saved_weeks", [])
+    if week_monday.isoformat() not in meta["saved_weeks"]:
+        meta["saved_weeks"].append(week_monday.isoformat())
+        meta["saved_weeks"] = sorted(meta["saved_weeks"])
+    _write_meta(meta)
+
+    return int(len(a)), int(len(b))
+
+
+def load_records() -> pd.DataFrame:
+    p = _records_path()
+    if not p.exists():
+        return pd.DataFrame(columns=["record_id","date","site","category","qty","week_monday","source"])
+    df = pd.read_csv(p, parse_dates=["date"])
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["site"] = df["site"].astype(str)
+    df["category"] = df["category"].astype(str)
+    df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0).astype(int)
+    if "record_id" not in df.columns:
+        df["record_id"] = [str(uuid.uuid4()) for _ in range(len(df))]
+        df.to_csv(p, index=False)
+    else:
+        df["record_id"] = df["record_id"].astype(str)
+    return df
+
+
+def delete_billing_records(*, week_monday: Optional[dt.date] = None, record_ids: Optional[List[str]] = None) -> int:
+    """Supprime des lignes de facturation 'Repas/Mixé-Lissé'.
+
+    - Si record_ids est fourni: supprime exactement ces lignes.
+    - Sinon, si week_monday est fourni: supprime toute la semaine.
+    """
+    p = _records_path()
+    if not p.exists():
+        return 0
+
+    df = load_records()
+    before = len(df)
+    mask = pd.Series([False] * len(df))
+
+    if record_ids:
+        ids = {str(x) for x in record_ids}
+        mask |= df["record_id"].astype(str).isin(ids)
+    elif week_monday is not None:
+        wm = week_monday.isoformat()
+        mask |= df.get("week_monday", "").astype(str) == wm
+    else:
+        return 0
+
+    if df.loc[mask].empty:
+        return 0
+
+    df2 = df.loc[~mask].copy()
+    df2.to_csv(p, index=False)
+    return int(before - len(df2))
+
+
+# -----------------------------
+# Pricing
+# -----------------------------
+
+DEFAULT_UNIT_PRICES = {
+    # Tarifs 2026
+    # Par défaut, tous les sites utilisent __default__.
+    # Si un site doit avoir un tarif spécifique, ajoute-le ici.
+    "repas": {"__default__": 6.60},
+    "mixe_lisse": {"__default__": 7.85},
+}
+
+
+def _unit_price(category: str, site: str, custom_prices: Optional[dict] = None) -> float:
+    prices = (custom_prices or DEFAULT_UNIT_PRICES).get(category, {})
+    # Normalisation légère du nom de site pour éviter les écarts de libellés
+    # (ex: "La MAS", "MAS ", "Mas", "MAS - ...").
+    s = (site or "").strip().upper()
+    if "MAS" in s:
+        s = "MAS"
+    return float(prices.get(s, prices.get("__default__", 0.0)))
+
+
+# -----------------------------
+# Excel styling helpers
+# -----------------------------
+
+def _style_header_cell(cell):
+    cell.font = Font(bold=True)
+    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    cell.fill = PatternFill("solid", fgColor="EDEDED")
+    thin = Side(style="thin", color="999999")
+    cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+
+def _style_cell(cell):
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    thin = Side(style="thin", color="CCCCCC")
+    cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+
+# -----------------------------
+# Excel export (monthly workbook)
+# -----------------------------
+
+def _write_month_block(
+    ws,
+    start_row: int,
+    title: str,
+    category: str,
+    sub: pd.DataFrame,
+    sites: List[str],
+    month_start: dt.date,
+    month_end: dt.date,
+    *,
+    custom_prices: Optional[dict] = None,
+) -> int:
+    """
+    Writes a block and returns the last row used.
+    Block layout:
+    Row start: title + unit prices + month_start date in last col
+    Row start+1: year + site names + TOTAL
+    Row start+2: label row
+    Rows start+3..: day numbers and quantities
+    Last row: TOTAL
+    """
+    n_sites = len(sites)
+    total_col = n_sites + 2  # A + sites + TOTAL
+
+    ws.cell(start_row, 1, title)
+    _style_header_cell(ws.cell(start_row, 1))
+    for i, site in enumerate(sites, start=2):
+        c = ws.cell(start_row, i, _unit_price(category, site, custom_prices))
+        _style_header_cell(c)
+        c.number_format = "0.00"
+    ws.cell(start_row, total_col, month_start)
+    _style_header_cell(ws.cell(start_row, total_col))
+    ws.cell(start_row, total_col).number_format = "yyyy-mm-dd"
+
+    ws.cell(start_row + 1, 1, month_start.year)
+    _style_header_cell(ws.cell(start_row + 1, 1))
+    for i, site in enumerate(sites, start=2):
+        c = ws.cell(start_row + 1, i, site)
+        _style_header_cell(c)
+    ctot = ws.cell(start_row + 1, total_col, "TOTAL")
+    _style_header_cell(ctot)
+
+    ws.cell(start_row + 2, 1, "")
+    for i in range(2, total_col):
+        _style_header_cell(ws.cell(start_row + 2, i))
+    ws.cell(start_row + 2, total_col, title.upper())
+    _style_header_cell(ws.cell(start_row + 2, total_col))
+
+    cat = sub[sub["category"] == category].copy()
+    cat["date"] = pd.to_datetime(cat["date"]).dt.date
+
+    days = pd.date_range(month_start, month_end, freq="D").date
+    pivot = pd.DataFrame(index=days, columns=sites, data=0)
+
+    if not cat.empty:
+        for _, row in cat.iterrows():
+            d = row["date"]
+            s = row["site"]
+            if d in pivot.index and s in pivot.columns:
+                pivot.loc[d, s] += int(row["qty"])
+
+    row = start_row + 3
+    for d in days:
+        ws.cell(row, 1, d.day)
+        _style_cell(ws.cell(row, 1))
+        day_total = 0
+        for i, site in enumerate(sites, start=2):
+            v = int(pivot.loc[d, site])
+            day_total += v
+            cell = ws.cell(row, i, v)
+            _style_cell(cell)
+        ws.cell(row, total_col, day_total)
+        _style_cell(ws.cell(row, total_col))
+        row += 1
+
+    ws.cell(row, 1, "TOTAL")
+    _style_header_cell(ws.cell(row, 1))
+    grand_total = 0
+    for i, site in enumerate(sites, start=2):
+        v = int(pivot[site].sum())
+        grand_total += v
+        cell = ws.cell(row, i, v)
+        _style_header_cell(cell)
+    ws.cell(row, total_col, grand_total)
+    _style_header_cell(ws.cell(row, total_col))
+
+    return row
+
+
+def _write_recap_sheet(
+    wb: openpyxl.Workbook,
+    records: pd.DataFrame,
+    sites: List[str],
+    year: int,
+    *,
+    custom_prices: Optional[dict] = None,
+) -> None:
+    """Add a recap sheet with monthly billed totals per site (standard + mixé/lissé)."""
+    ws = wb.create_sheet(f"RECAP {year}")
+
+    n_sites = len(sites)
+    total_col = n_sites + 2  # A + sites + TOTAL
+
+    ws.cell(1, 1, f"Récapitulatif facturation {year}")
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_col)
+    _style_header_cell(ws.cell(1, 1))
+    ws.row_dimensions[1].height = 22
+
+    months = [
+        "Janvier","Février","Mars","Avril","Mai","Juin",
+        "Juillet","Août","Septembre","Octobre","Novembre","Décembre"
+    ]
+
+    def _block(start_row: int, label: str, category: str) -> int:
+        ws.cell(start_row, 1, label)
+        ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=total_col)
+        _style_header_cell(ws.cell(start_row, 1))
+
+        ws.cell(start_row + 1, 1, "Mois")
+        _style_header_cell(ws.cell(start_row + 1, 1))
+        for i, site in enumerate(sites, start=2):
+            c = ws.cell(start_row + 1, i, site)
+            _style_header_cell(c)
+        ctot = ws.cell(start_row + 1, total_col, "TOTAL")
+        _style_header_cell(ctot)
+
+        r = start_row + 2
+        for m in range(1, 13):
+            ws.cell(r, 1, months[m - 1])
+            _style_cell(ws.cell(r, 1))
+            row_total = 0.0
+
+            for i, site in enumerate(sites, start=2):
+                qty = records[
+                    (records["year"] == year)
+                    & (records["month"] == m)
+                    & (records["category"] == category)
+                    & (records["site"] == site)
+                ]["qty"].sum()
+
+                amount = float(qty) * _unit_price(category, site, custom_prices)
+                row_total += amount
+
+                cell = ws.cell(r, i, amount)
+                _style_cell(cell)
+                cell.number_format = '#,##0.00" €"'
+
+            cell_total = ws.cell(r, total_col, row_total)
+            _style_cell(cell_total)
+            cell_total.number_format = '#,##0.00" €"'
+            r += 1
+
+        ws.cell(r, 1, "TOTAL ANNUEL")
+        _style_header_cell(ws.cell(r, 1))
+
+        grand = 0.0
+        for i, site in enumerate(sites, start=2):
+            qty = records[
+                (records["year"] == year)
+                & (records["category"] == category)
+                & (records["site"] == site)
+            ]["qty"].sum()
+
+            amount = float(qty) * _unit_price(category, site, custom_prices)
+            grand += amount
+
+            cell = ws.cell(r, i, amount)
+            _style_header_cell(cell)
+            cell.number_format = '#,##0.00" €"'
+
+        cell_total = ws.cell(r, total_col, grand)
+        _style_header_cell(cell_total)
+        cell_total.number_format = '#,##0.00" €"'
+
+        return r + 2
+
+    next_row = _block(3, "FACTURATION — REPAS STANDARD", "repas")
+    _block(next_row, "FACTURATION — MIXÉ/LISSÉ", "mixe_lisse")
+
+    ws.column_dimensions["A"].width = 16
+    for i in range(2, total_col + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 18
+
+    ws.freeze_panes = "B5"
+
+
+def export_monthly_workbook(
+    records: pd.DataFrame,
+    out_path: str,
+    *,
+    custom_prices: Optional[dict] = None,
+) -> str:
+    """
+    Create an Excel workbook for billing.
+
+    Workbook contains 12 sheets (YYYY-01 -> YYYY-12) for the most recent year found in records,
+    plus a recap sheet at the end.
+    """
+    if records is None or records.empty:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Aucune donnée"
+        ws["A1"] = "Aucune semaine mémorisée pour la facturation."
+        wb.save(out_path)
+        return out_path
+
+    records = records.copy()
+    records["date"] = pd.to_datetime(records["date"]).dt.date
+
+    if "site" in records.columns:
+        records["site"] = records["site"].map(norm_site_facturation)
+
+    records["year"] = records["date"].map(lambda d: d.year)
+    records["month"] = records["date"].map(lambda d: d.month)
+
+    export_year = int(records["year"].max())
+    year_records = records[records["year"] == export_year]
+    sites = sorted(year_records["site"].dropna().unique().tolist(), key=lambda s: str(s).upper())
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    for m in range(1, 13):
+        y = export_year
+        sheet_name = f"{y}-{m:02d}"
+        ws = wb.create_sheet(sheet_name)
+
+        month_start = dt.date(y, m, 1)
+        if m == 12:
+            month_end = dt.date(y + 1, 1, 1) - dt.timedelta(days=1)
+        else:
+            month_end = dt.date(y, m + 1, 1) - dt.timedelta(days=1)
+
+        sub = records[(records["year"] == y) & (records["month"] == m)].copy()
+
+        r = 1
+        r = _write_month_block(ws, r, "Repas", "repas", sub, sites, month_start, month_end, custom_prices=custom_prices)
+        r += 2
+        _write_month_block(ws, r, "Mixé/Lissé", "mixe_lisse", sub, sites, month_start, month_end, custom_prices=custom_prices)
+
+        ws.column_dimensions["A"].width = 10
+        for i, _ in enumerate(sites, start=2):
+            ws.column_dimensions[get_column_letter(i)].width = 14
+        ws.column_dimensions[get_column_letter(len(sites) + 2)].width = 12
+
+        ws.freeze_panes = "B4"
+
+    _write_recap_sheet(wb, records, sites, export_year, custom_prices=custom_prices)
+
+    wb.save(out_path)
+    return out_path
+
+
+# -----------------------------
+# Import corrections (monthly workbook)
+# -----------------------------
+
+def apply_corrected_monthly_workbook(
+    xlsx_path: str,
+    *,
+    keep_zero_rows: bool = False,
+) -> Tuple[int, int]:
+    """Apply a corrected *Facturation.xlsx* back into the app storage.
+
+    Expected input is the Excel workbook generated by :func:`export_monthly_workbook`.
+    This function reads the quantities (Repas + Mixé/Lissé) from each month sheet and
+    updates the local records.csv accordingly.
+
+    Returns (n_removed, n_added).
+    """
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+
+    imported_rows: List[dict] = []
+    months_seen: List[Tuple[int, int]] = []
+
+    def _iter_month_sheets():
+        for ws in wb.worksheets:
+            name = (ws.title or "").strip()
+            # Skip recap / non-month sheets
+            if name.upper().startswith("RECAP"):
+                continue
+            if re.fullmatch(r"\d{4}-\d{2}", name):
+                yield ws
+
+    def _find_block_start(ws, label: str) -> Optional[int]:
+        target = (label or "").strip().lower()
+        for r in range(1, ws.max_row + 1):
+            v = ws.cell(r, 1).value
+            if isinstance(v, str) and v.strip().lower() == target:
+                return r
+        return None
+
+    def _parse_block(ws, start_row: int, category: str) -> Tuple[dt.date, dt.date, List[str]]:
+        """Parse one block (Repas or Mixé/Lissé) and append rows to imported_rows."""
+        # Header row has sites from column 2.. until TOTAL
+        sites: List[str] = []
+        col = 2
+        while True:
+            v = ws.cell(start_row + 1, col).value
+            if v is None:
+                break
+            if isinstance(v, str) and v.strip().upper() == "TOTAL":
+                break
+            sites.append(str(v))
+            col += 1
+        total_col = len(sites) + 2
+
+        # Month start date is stored in last column of the title row
+        month_start_val = ws.cell(start_row, total_col).value
+        if isinstance(month_start_val, dt.datetime):
+            month_start = month_start_val.date()
+        elif isinstance(month_start_val, dt.date):
+            month_start = month_start_val
+        else:
+            # fallback: infer from sheet title
+            m = re.match(r"^(\d{4})-(\d{2})$", (ws.title or "").strip())
+            if not m:
+                raise ValueError(f"Feuille inattendue: {ws.title}")
+            y, mo = int(m.group(1)), int(m.group(2))
+            month_start = dt.date(y, mo, 1)
+
+        # Month end from month_start
+        if month_start.month == 12:
+            month_end = dt.date(month_start.year + 1, 1, 1) - dt.timedelta(days=1)
+        else:
+            month_end = dt.date(month_start.year, month_start.month + 1, 1) - dt.timedelta(days=1)
+
+        # Data rows: start_row+3.. until col1 == 'TOTAL'
+        r = start_row + 3
+        while r <= ws.max_row:
+            v0 = ws.cell(r, 1).value
+            if isinstance(v0, str) and v0.strip().upper() == "TOTAL":
+                break
+            try:
+                day_num = int(v0)
+            except Exception:
+                r += 1
+                continue
+
+            d = dt.date(month_start.year, month_start.month, day_num)
+            for i, site in enumerate(sites, start=2):
+                qty = ws.cell(r, i).value
+                try:
+                    q = int(qty) if qty is not None else 0
+                except Exception:
+                    q = 0
+                if keep_zero_rows or q != 0:
+                    imported_rows.append(
+                        {
+                            "date": d,
+                            "site": norm_site_facturation(str(site)),
+                            "category": category,
+                            "qty": int(q),
+                            "week_monday": "",
+                            "source": "import_xlsx",
+                        }
+                    )
+            r += 1
+
+        months_seen.append((month_start.year, month_start.month))
+        return month_start, month_end, sites
+
+    for ws in _iter_month_sheets():
+        # Find and parse both blocks
+        r_repas = _find_block_start(ws, "Repas")
+        r_ml = _find_block_start(ws, "Mixé/Lissé")
+        if r_repas is not None:
+            _parse_block(ws, r_repas, "repas")
+        if r_ml is not None:
+            _parse_block(ws, r_ml, "mixe_lisse")
+
+    if not imported_rows:
+        return (0, 0)
+
+    imported_df = pd.DataFrame(imported_rows)
+    imported_df["date"] = pd.to_datetime(imported_df["date"]).dt.date
+    imported_df["qty"] = pd.to_numeric(imported_df["qty"], errors="coerce").fillna(0).astype(int)
+
+    # Load current records
+    p = _records_path()
+    if p.exists():
+        old = pd.read_csv(p, parse_dates=["date"])
+        old["date"] = pd.to_datetime(old["date"]).dt.date
+    else:
+        old = pd.DataFrame(columns=["date","site","category","qty","week_monday","source"])
+
+    # Remove rows for the months present in the imported workbook (for Repas + Mixé/Lissé)
+    months_set = set(months_seen)
+    def _month_key(d: dt.date) -> Tuple[int, int]:
+        return (d.year, d.month)
+
+    if not old.empty:
+        old_month_keys = old["date"].map(_month_key)
+        mask_remove = old_month_keys.isin(months_set) & old["category"].isin(["repas","mixe_lisse"])
+        n_removed = int(mask_remove.sum())
+        old_kept = old.loc[~mask_remove].copy()
+    else:
+        n_removed = 0
+        old_kept = old
+
+    merged = pd.concat([old_kept, imported_df], ignore_index=True)
+    merged.to_csv(p, index=False)
+
+    return (n_removed, int(len(imported_df)))

@@ -1,0 +1,10 @@
+--- /mnt/data/_orig/Gestion-Cuisine/requirements.txt	2026-01-30 15:57:58.000000000 +0000
++++ /mnt/data/_mod2/Gestion-Cuisine/requirements.txt	2026-02-01 17:35:01.000000000 +0000
+@@ -2,3 +2,7 @@
+ pandas>=2.0
+ openpyxl>=3.1
+ reportlab>=4.0
++xlrd==2.0.1
++pytesseract>=0.3
++pdf2image>=1.17
++pillow>=10.0
