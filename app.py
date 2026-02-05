@@ -103,7 +103,6 @@ mixe_lisse_to_daily_totals = billing.mixe_lisse_to_daily_totals
 save_week = billing.save_week
 load_records = billing.load_records
 export_monthly_workbook = billing.export_monthly_workbook
-apply_corrected_monthly_workbook = billing.apply_corrected_monthly_workbook
 
 # allergènes
 learn_from_filled_allergen_workbook = learner.learn_from_filled_allergen_workbook
@@ -184,8 +183,8 @@ st.title("Gestion cuisine centrale")
 
 with st.sidebar:
     st.header("Fichiers")
-    planning_file = st.file_uploader("Planning fabrication (.xlsx)", type=["xlsx","xlsm"])
-    menu_file = st.file_uploader("Menu (.xlsx)", type=["xlsx","xlsm"])
+    planning_file = st.file_uploader("Planning fabrication (.xlsx)", type=["xlsx"])
+    menu_file = st.file_uploader("Menu (.xlsx)", type=["xlsx"])
     st.markdown("---")
     st.caption(
         "Conseil : utilise les fichiers d’origine (avec formules) ; l’app récupère les valeurs correctement."
@@ -288,8 +287,8 @@ if not planning_file or not menu_file:
 
 try:
     # ---- Préparation fichiers temporaires (cloud-safe) ----
-    planning_path = _save_uploaded_file(planning_file, suffix=Path(getattr(planning_file, "name", "")).suffix or ".xlsx")
-    menu_path = _save_uploaded_file(menu_file, suffix=Path(getattr(menu_file, "name", "")).suffix or ".xlsx")
+    planning_path = _save_uploaded_file(planning_file, suffix=".xlsx")
+    menu_path = _save_uploaded_file(menu_file, suffix=".xlsx")
 
     # ✅ Parse planning depuis le PATH (plus robuste sur Streamlit Cloud)
     planning = parse_planning_fabrication(planning_path)
@@ -431,7 +430,7 @@ try:
                 "2) Ré-uploade le fichier ici pour générer 1 bon par fournisseur."
             )
             bc_filled = st.file_uploader(
-                "Bon de commande rempli (.xlsx)", type=["xlsx","xlsm"], key="bc_filled"
+                "Bon de commande rempli (.xlsx)", type=["xlsx"], key="bc_filled"
             )
             if bc_filled is not None:
                 try:
@@ -551,7 +550,7 @@ try:
 
         batch_files = st.file_uploader(
             "Plannings fabrication (plusieurs fichiers .xlsx)",
-            type=["xlsx","xlsm"],
+            type=["xlsx"],
             accept_multiple_files=True,
             key="batch_plannings",
         )
@@ -620,35 +619,6 @@ try:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
 
-        st.divider()
-        st.markdown("### Importer une facturation corrigée (retour comptable)")
-        st.caption(
-            "Si le fichier Facturation.xlsx est corrigé (quantités modifiées), tu peux le réimporter ici. "
-            "L'app mettra à jour sa mémoire (records.csv) pour les mois présents dans le fichier."
-        )
-        corrected_xlsx = st.file_uploader(
-            "Facturation corrigée (.xlsx)",
-            type=["xlsx","xlsm"],
-            key="factu_corrected",
-        )
-        if st.button("✅ Appliquer les corrections", key="apply_factu_corrections"):
-            if not corrected_xlsx:
-                st.error("Upload d'abord un fichier Facturation.xlsx corrigé.")
-            else:
-                tmp_corr = _save_uploaded_file(corrected_xlsx, suffix=".xlsx")
-                try:
-                    n_removed, n_added = apply_corrected_monthly_workbook(tmp_corr)
-                    if n_removed == 0 and n_added == 0:
-                        st.warning("Aucune donnée importable détectée dans ce fichier (vérifie qu'il vient bien de l'app).")
-                    else:
-                        st.success(
-                            f"Corrections appliquées : {n_removed} ligne(s) remplacée(s) / supprimée(s), "
-                            f"{n_added} ligne(s) importée(s)."
-                        )
-                except Exception as e:
-                    st.error("Impossible d'importer ce fichier. Il doit provenir de l'export de l'app.")
-                    st.code(repr(e))
-
     with tab_all:
         st.subheader("Tableaux allergènes (format EXACT)")
         st.caption(
@@ -664,7 +634,7 @@ try:
             st.markdown("### 0) Référentiel maître (obligatoire)")
             master_upload = st.file_uploader(
                 "Upload le référentiel maître (.xlsx) (celui que tu fais évoluer semaine après semaine)",
-                type=["xlsx","xlsm"],
+                type=["xlsx"],
                 key="master_upload",
             )
             st.caption(
@@ -674,7 +644,7 @@ try:
             st.markdown("### 1) Apprentissage (à partir d'un classeur allergènes rempli)")
             filled_allergen_wb = st.file_uploader(
                 "Classeur allergènes rempli (ton format, avec des X) — optionnel (pour apprendre)",
-                type=["xlsx","xlsm"],
+                type=["xlsx"],
                 key="all_filled_upload",
             )
 
