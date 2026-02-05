@@ -290,8 +290,14 @@ def export_orders_per_supplier_pdf(
         leading=11,
     )
 
-        # Watermark désactivé : aucun logo sur les bons de commande fournisseurs
+    # Watermark path: src/assets/watermark.png (chemin absolu)
+    watermark_path = (Path(__file__).resolve().parent / "assets" / "watermark.png")
     watermark_reader = None
+    if watermark_path.exists():
+        try:
+            watermark_reader = ImageReader(str(watermark_path))
+        except Exception:
+            watermark_reader = None
 
     def _on_page(canvas_obj, doc_obj):
         canvas_obj.saveState()
