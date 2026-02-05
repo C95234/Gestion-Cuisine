@@ -36,13 +36,12 @@ def _supplier_lookup(suppliers: List[Dict[str, str]]) -> Dict[str, SupplierInfo]
 
 def group_lines_for_order(df: pd.DataFrame) -> pd.DataFrame:
     """Bon fournisseur (lisible) :
-    - Regroupe par Produit + Unité (et Livraison si présente)
-    - Somme des Quantités, Poids total, Prix cible total
-    - Conserve le Prix cible unitaire si unique, sinon vide.
+    - Regroupe par Produit + Unité (évite de mélanger kg / pièces / L)
+    - Somme des Quantités
+    - Sortie : Produit | Quantité | Unité
     """
-    cols = ["Produit", "Quantité", "Unité", "Prix cible unitaire", "Prix cible total", "Poids total (kg)", "Livraison"]
     if df is None or df.empty:
-        return pd.DataFrame(columns=cols)
+        return pd.DataFrame(columns=["Produit", "Quantité", "Unité"])
 
     d = df.copy()
 
@@ -58,60 +57,23 @@ def group_lines_for_order(df: pd.DataFrame) -> pd.DataFrame:
         if cand in d.columns:
             unit_col = cand
             break
-    d["Unité"] = d[unit_col] if unit_col else ""
+    if unit_col is None:
+        d["Unité"] = ""
+    else:
+        d["Unité"] = d[unit_col]
 
-    # Normalisation
     d["Produit"] = d["Produit"].fillna("").astype(str).str.strip()
     d["Unité"] = d["Unité"].fillna("").astype(str).str.strip()
-    d["Livraison"] = d.get("Livraison", "").fillna("").astype(str).str.strip()
 
     d["Quantité"] = pd.to_numeric(d.get("Quantité", 0), errors="coerce").fillna(0)
 
-    pu = pd.to_numeric(d.get("Prix cible unitaire", 0), errors="coerce").fillna(0)
-    d["_pu"] = pu
-    d["_prix_total"] = d["Quantité"] * d["_pu"]
-
-    if "Poids total (kg)" in d.columns:
-        d["_poids_total"] = pd.to_numeric(d.get("Poids total (kg)", 0), errors="coerce").fillna(0)
-    else:
-        wu = pd.to_numeric(d.get("Poids unitaire (kg)", 0), errors="coerce").fillna(0)
-        d["_poids_total"] = d["Quantité"] * wu
-
-    key_cols = ["Produit", "Unité", "Livraison"]
     grouped = (
-        d.groupby(key_cols, as_index=False)
-        .agg(
-            {
-                "Quantité": "sum",
-                "_prix_total": "sum",
-                "_poids_total": "sum",
-                "_pu": lambda s: s.dropna().unique().tolist(),
-            }
-        )
-        .sort_values(key_cols)
+        d.groupby(["Produit", "Unité"], as_index=False)["Quantité"]
+        .sum()
+        .sort_values(["Produit", "Unité"])
         .reset_index(drop=True)
     )
-
-    def _one_or_blank(v):
-        try:
-            uniq = [float(x) for x in v if x not in (None, "") and float(x) != 0.0]
-        except Exception:
-            uniq = []
-        if len(uniq) == 1:
-            return uniq[0]
-        return ""
-
-    grouped["Prix cible unitaire"] = grouped["_pu"].apply(_one_or_blank)
-    grouped["Prix cible total"] = grouped["_prix_total"].round(2)
-    grouped["Poids total (kg)"] = grouped["_poids_total"].round(3)
-
-    grouped = grouped.drop(columns=["_pu", "_prix_total", "_poids_total"])
-
-    for c in cols:
-        if c not in grouped.columns:
-            grouped[c] = ""
-    return grouped[cols]
-
+    return grouped
 
 def export_orders_per_supplier_excel(
     bon_df: pd.DataFrame,
@@ -165,7 +127,7 @@ def export_orders_per_supplier_excel(
         info = sup_map.get(sup_name, SupplierInfo(name=sup_name))
 
         # --- Bandeau titre
-        ws.merge_cells("A1:G1")
+        ws.merge_cells("A1:C1")
         ws["A1"].value = "BON DE COMMANDE"
         ws["A1"].fill = title_fill
         ws["A1"].font = title_font
@@ -173,7 +135,7 @@ def export_orders_per_supplier_excel(
         ws.row_dimensions[1].height = 26
 
         # Fournisseur (gros)
-        ws.merge_cells("A2:G2")
+        ws.merge_cells("A2:C2")
         ws["A2"].value = f"{info.name}"
         ws["A2"].font = Font(bold=True, size=12)
         ws["A2"].alignment = Alignment(horizontal="center", vertical="center")
@@ -182,19 +144,19 @@ def export_orders_per_supplier_excel(
         # Infos
         r = 3
         if info.customer_code:
-            ws.merge_cells(f"A{r}:G{r}")
+            ws.merge_cells(f"A{r}:C{r}")
             ws[f"A{r}"].value = f"Code client : {info.customer_code}"
             ws[f"A{r}"].font = subtitle_font
             ws[f"A{r}"].alignment = Alignment(horizontal="center")
             r += 1
         if info.coord1:
-            ws.merge_cells(f"A{r}:G{r}")
+            ws.merge_cells(f"A{r}:C{r}")
             ws[f"A{r}"].value = info.coord1
             ws[f"A{r}"].font = subtitle_font
             ws[f"A{r}"].alignment = Alignment(horizontal="center")
             r += 1
         if info.coord2:
-            ws.merge_cells(f"A{r}:G{r}")
+            ws.merge_cells(f"A{r}:C{r}")
             ws[f"A{r}"].value = info.coord2
             ws[f"A{r}"].font = subtitle_font
             ws[f"A{r}"].alignment = Alignment(horizontal="center")
@@ -208,7 +170,7 @@ def export_orders_per_supplier_excel(
             lines = lines[lines["Quantité"].astype(float) > 0].reset_index(drop=True)
 
         # En-tête tableau
-        headers = ["Produit", "Quantité", "Unité", "Prix cible unitaire", "Prix cible total", "Poids total (kg)", "Livraison"]
+        headers = ["Produit", "Quantité", "Unité"]
         for c, h in enumerate(headers, start=1):
             cell = ws.cell(row=start_row, column=c)
             cell.value = h
@@ -224,10 +186,6 @@ def export_orders_per_supplier_excel(
             prod = getattr(row, "Produit", "")
             qty = getattr(row, "Quantité", 0)
             unit = getattr(row, "Unité", "")
-            pu = getattr(row, "Prix cible unitaire", "")
-            pt = getattr(row, "Prix cible total", 0)
-            wt = getattr(row, "Poids total (kg)", 0)
-            liv = getattr(row, "Livraison", "")
 
             c1 = ws.cell(row=rr, column=1, value=prod)
             c1.alignment = left_align
@@ -242,44 +200,16 @@ def export_orders_per_supplier_excel(
             c3.alignment = left_align
             c3.border = border
 
-
-            c4 = ws.cell(row=rr, column=4, value=pu)
-            c4.number_format = "#,##0.00"
-            c4.alignment = right_align
-            c4.border = border
-
-            c5 = ws.cell(row=rr, column=5, value=float(pt) if pt != "" else "")
-            c5.number_format = "#,##0.00"
-            c5.alignment = right_align
-            c5.border = border
-
-            c6 = ws.cell(row=rr, column=6, value=float(wt) if wt != "" else "")
-            c6.number_format = "#,##0.000"
-            c6.alignment = right_align
-            c6.border = border
-
-            c7 = ws.cell(row=rr, column=7, value=liv)
-            c7.alignment = left_align
-            c7.border = border
-
             if i % 2 == 0:
                 c1.fill = zebra_fill
                 c2.fill = zebra_fill
                 c3.fill = zebra_fill
-                c4.fill = zebra_fill
-                c5.fill = zebra_fill
-                c6.fill = zebra_fill
-                c7.fill = zebra_fill
 
         # Mise en page
         ws.freeze_panes = ws.cell(row=start_row + 1, column=1)
         ws.column_dimensions["A"].width = 52
         ws.column_dimensions["B"].width = 14
         ws.column_dimensions["C"].width = 12
-        ws.column_dimensions["D"].width = 18
-        ws.column_dimensions["E"].width = 18
-        ws.column_dimensions["F"].width = 16
-        ws.column_dimensions["G"].width = 18
         ws.print_title_rows = f"{start_row}:{start_row}"
         ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
         ws.page_setup.fitToWidth = 1
