@@ -104,6 +104,9 @@ ConfigStore = cs.ConfigStore
 # order_forms
 export_orders_per_supplier_excel = order_forms.export_orders_per_supplier_excel
 export_orders_per_supplier_pdf = order_forms.export_orders_per_supplier_pdf
+split_bon_by_deliveries = getattr(order_forms, "split_bon_by_deliveries", None)
+export_orders_per_supplier_excel_by_delivery = getattr(order_forms, "export_orders_per_supplier_excel_by_delivery", None)
+export_orders_per_supplier_pdf_by_delivery = getattr(order_forms, "export_orders_per_supplier_pdf_by_delivery", None)
 
 # billing
 planning_to_daily_totals = billing.planning_to_daily_totals
@@ -475,9 +478,26 @@ try:
         with cbc2:
             st.markdown("**Bons par fournisseur (après édition du bon)**")
             st.caption(
-                "1) Télécharge le bon Excel, complète les colonnes Coefficient/Unité/Fournisseur/Libellé. "
-                "2) Ré-uploade le fichier ici pour générer 1 bon par fournisseur."
+                "1) Télécharge le bon Excel, complète les colonnes Coefficient/Unité/Fournisseur/Libellé, "
+                "et (si besoin) **Poids unitaire (kg)** + **Prix cible unitaire**. "
+                "2) Ré-uploade le fichier ici pour générer les bons fournisseurs."
             )
+
+            # --- Paramètres de découpage livraison (optionnel)
+            st.markdown("**Découpage par livraisons (optionnel)**")
+            st.caption(
+                "Si tu renseignes plusieurs dates (ou libellés) de livraison, l'app répartit les lignes "
+                "pour ne pas dépasser **50 kg** par livraison, puis calcule le **prix cible** par livraison."
+            )
+            delivery_txt = st.text_area(
+                "Dates/libellés de livraison (1 par ligne)",
+                value="",
+                placeholder="ex:\n2026-02-06\n2026-02-08\n2026-02-10",
+                key="delivery_labels",
+                height=90,
+            )
+            max_kg = st.number_input("Poids max par livraison (kg)", min_value=1.0, max_value=500.0, value=50.0, step=1.0, key="delivery_maxkg")
+
             bc_filled = st.file_uploader(
                 "Bon de commande rempli (.xlsx/.xls)", type=["xlsx","xlsm","xls"], key="bc_filled"
             )
@@ -487,30 +507,53 @@ try:
                 except Exception:
                     df_filled = _read_excel_any(bc_filled)
 
+                # Parse labels
+                labels = [l.strip() for l in str(delivery_txt or "").splitlines() if l.strip()]
+
+                df_for_export = df_filled
+                summary = None
+                if labels and split_bon_by_deliveries is not None:
+                    try:
+                        df_for_export, summary = split_bon_by_deliveries(df_filled, labels, max_weight_kg=float(max_kg))
+                    except Exception as e:
+                        st.warning(f"Découpage livraison impossible (on génère sans découpage) : {e}")
+                        df_for_export = df_filled
+                        summary = None
+
+                if summary is not None and not summary.empty:
+                    st.markdown("**Résumé des livraisons**")
+                    st.dataframe(summary, use_container_width=True, hide_index=True)
+
                 out_xlsx = _temp_out_path(".xlsx")
                 out_pdf = _temp_out_path(".pdf")
 
                 cbtn1, cbtn2 = st.columns(2)
                 with cbtn1:
-                    if st.button("Générer Excel (1 feuille / fournisseur)", key="gen_sup_xlsx"):
-                        export_orders_per_supplier_excel(df_filled, out_xlsx, suppliers=suppliers2)
+                    if st.button("Générer Excel", key="gen_sup_xlsx"):
+                        if summary is not None and export_orders_per_supplier_excel_by_delivery is not None:
+                            export_orders_per_supplier_excel_by_delivery(df_for_export, out_xlsx, suppliers=suppliers2)
+                            fname = "Bons fournisseurs — par livraison.xlsx"
+                        else:
+                            export_orders_per_supplier_excel(df_for_export, out_xlsx, suppliers=suppliers2)
+                            fname = "Bons fournisseurs.xlsx"
                         with open(out_xlsx, "rb") as f:
                             st.download_button(
-                                "Télécharger Bons fournisseurs.xlsx",
-                                data=f,
-                                file_name="Bons fournisseurs.xlsx",
+                                "Télécharger", data=f, file_name=fname,
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             )
                 with cbtn2:
-                    if st.button("Générer PDF (1 page / fournisseur)", key="gen_sup_pdf"):
-                        export_orders_per_supplier_pdf(df_filled, out_pdf, suppliers=suppliers2)
+                    if st.button("Générer PDF", key="gen_sup_pdf"):
+                        if summary is not None and export_orders_per_supplier_pdf_by_delivery is not None:
+                            export_orders_per_supplier_pdf_by_delivery(df_for_export, out_pdf, suppliers=suppliers2)
+                            fname = "Bons fournisseurs — par livraison.pdf"
+                        else:
+                            export_orders_per_supplier_pdf(df_for_export, out_pdf, suppliers=suppliers2)
+                            fname = "Bons fournisseurs.pdf"
                         with open(out_pdf, "rb") as f:
                             st.download_button(
-                                "Télécharger Bons fournisseurs.pdf",
-                                data=f,
-                                file_name="Bons fournisseurs.pdf",
-                                mime="application/pdf",
+                                "Télécharger", data=f, file_name=fname, mime="application/pdf"
                             )
+
 
     with tab_bl:
         st.subheader("Bons de livraison (PDF)")
