@@ -67,8 +67,19 @@ def _import_or_stop():
         importlib.reload(pdj_billing)
 
         # Import parseur PDJ (lecture bons PDF/Excel + OCR best-effort)
-        pdj_facturation = importlib.import_module("src.pdj_facturation")
-        importlib.reload(pdj_facturation)
+        # ⚠️ Optionnel : peut dépendre de PyMuPDF (import fitz) selon les features.
+        # Si la dépendance n'est pas présente, on n'empêche PAS le reste de l'app de tourner.
+        try:
+            pdj_facturation = importlib.import_module("src.pdj_facturation")
+            importlib.reload(pdj_facturation)
+        except Exception as e:
+            pdj_facturation = None
+            st.warning(
+                "⚠️ Module PDJ (import automatique PDF) indisponible : "
+                f"{e}.\n\n"
+                "L'application reste utilisable. Pour activer l'import PDF PDJ, installe `pymupdf` "
+                "(ex: `python -m pip install pymupdf`)."
+            )
 
         # Import allergènes
         learner = importlib.import_module("src.allergens.learner")
@@ -755,49 +766,57 @@ try:
         base_rows = pd.DataFrame({"product": pdj_default_products, "qty": 0.0})
 
         if pdj_file is not None:
-            try:
-                parsed = pdj_facturation.parse_pdj_order_file(pdj_file)
-                items = getattr(parsed, "items", []) or []
-                detected_site = getattr(parsed, "site", None)
+            if pdj_facturation is None:
+                st.warning(
+                    "Import automatique PDJ indisponible (dépendance manquante : PyMuPDF / `fitz`). "
+                    "Tu peux quand même saisir les quantités manuellement, ou importer un Excel."
+                )
+            else:
+                try:
+                    parsed = pdj_facturation.parse_pdj_order_file(pdj_file)
+                    items = getattr(parsed, "items", []) or []
+                    detected_site = getattr(parsed, "site", None)
 
-                # Pré-remplissage du champ site si vide
-                if detected_site and not str(st.session_state.get("pdj_site", "")).strip():
-                    st.session_state["pdj_site"] = str(detected_site)
+                    # Pré-remplissage du champ site si vide
+                    if detected_site and not str(st.session_state.get("pdj_site", "")).strip():
+                        st.session_state["pdj_site"] = str(detected_site)
 
-                # Pré-remplissage des quantités (matching souple)
-                def _k(s: str) -> str:
-                    return " ".join(str(s or "").strip().lower().split())
+                    # Pré-remplissage des quantités (matching souple)
+                    def _k(s: str) -> str:
+                        return " ".join(str(s or "").strip().lower().split())
 
-                items_map = { _k(p): float(q) for (p, q) in items if p and q is not None }
-                used = set()
+                    items_map = {_k(p): float(q) for (p, q) in items if p and q is not None}
+                    used = set()
 
-                # Remplit d'abord les produits déjà dans la liste
-                for i, prod in enumerate(list(base_rows["product"])):
-                    k = _k(prod)
-                    if k in items_map:
-                        base_rows.loc[i, "qty"] = items_map[k]
-                        used.add(k)
-                    else:
-                        # fallback: contient / ressemble (OCR)
-                        for kk, vv in items_map.items():
-                            if kk in k or k in kk:
-                                base_rows.loc[i, "qty"] = vv
-                                used.add(kk)
-                                break
+                    # Remplit d'abord les produits déjà dans la liste
+                    for i, prod in enumerate(list(base_rows["product"])):
+                        k = _k(prod)
+                        if k in items_map:
+                            base_rows.loc[i, "qty"] = items_map[k]
+                            used.add(k)
+                        else:
+                            # fallback: contient / ressemble (OCR)
+                            for kk, vv in items_map.items():
+                                if kk in k or k in kk:
+                                    base_rows.loc[i, "qty"] = vv
+                                    used.add(kk)
+                                    break
 
-                # Ajoute les produits non reconnus dans la liste par défaut
-                extra = [(p, q) for (p, q) in items if _k(p) not in used]
-                if extra:
-                    extra_df = pd.DataFrame({"product": [p for p, _ in extra], "qty": [float(q) for _, q in extra]})
-                    base_rows = pd.concat([base_rows, extra_df], ignore_index=True)
+                    # Ajoute les produits non reconnus dans la liste par défaut
+                    extra = [(p, q) for (p, q) in items if _k(p) not in used]
+                    if extra:
+                        extra_df = pd.DataFrame(
+                            {"product": [p for p, _ in extra], "qty": [float(q) for _, q in extra]}
+                        )
+                        base_rows = pd.concat([base_rows, extra_df], ignore_index=True)
 
-                msg = "📎 Bon importé : pré-remplissage effectué (à vérifier / corriger si besoin)."
-                if detected_site:
-                    msg += f" Site détecté : **{detected_site}**."
-                st.info(msg)
-            except Exception as e:
-                st.warning("📎 Bon importé, mais lecture automatique impossible. Saisie manuelle requise.")
-                st.code(repr(e))
+                    msg = "📎 Bon importé : pré-remplissage effectué (à vérifier / corriger si besoin)."
+                    if detected_site:
+                        msg += f" Site détecté : **{detected_site}**."
+                    st.info(msg)
+                except Exception as e:
+                    st.warning("📎 Bon importé, mais lecture automatique impossible. Saisie manuelle requise.")
+                    st.code(repr(e))
         pdj_table = st.data_editor(
             base_rows,
             use_container_width=True,
