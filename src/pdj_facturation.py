@@ -12,16 +12,15 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 # PDF -> image (optionnel)
-# PyMuPDF s'installe via le paquet `pymupdf` mais s'importe avec `import fitz`.
-# Sur certains environnements (Streamlit Cloud / Docker minimal), cette dépendance
-# peut être absente. On rend donc l'import **non bloquant** : la saisie manuelle
-# fonctionne toujours, seule la lecture automatique des PDF est désactivée.
+# PyMuPDF s'installe via `pymupdf` mais s'importe avec `import fitz`.
+# Sur certains environnements (Streamlit Cloud / serveurs verrouillés),
+# la dépendance peut être absente : on évite alors de faire planter toute l'app.
 try:
     import fitz  # type: ignore  # pymupdf
-    _FITZ_AVAILABLE = True
-except Exception:  # pragma: no cover
+    HAS_FITZ = True
+except Exception:
     fitz = None  # type: ignore
-    _FITZ_AVAILABLE = False
+    HAS_FITZ = False
 from PIL import Image, ImageOps, ImageEnhance
 # OCR (requis pour PDF scanné)
 import pytesseract
@@ -202,11 +201,10 @@ def _normalize_product_name(raw: str) -> str:
 
 
 def _pdf_to_images(pdf_bytes: bytes, dpi_scale: float = 2.0) -> List[Image.Image]:
-    if not _FITZ_AVAILABLE:
-        raise ImportError(
-            "Lecture PDF indisponible : dépendance manquante. "
-            "Installe `pymupdf` (ex: `python -m pip install pymupdf`) "
-            "ou utilise l'import Excel / la saisie manuelle."
+    if not HAS_FITZ or fitz is None:
+        raise RuntimeError(
+            "Import PDF indisponible: PyMuPDF (pymupdf) n'est pas installé. "
+            "Installe-le avec `pip install pymupdf` pour activer la lecture des PDF."
         )
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     images: List[Image.Image] = []
