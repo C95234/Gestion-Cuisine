@@ -267,10 +267,10 @@ with st.sidebar:
                 try:
                     store.save_coefficients(dfc_edit.to_dict("records"))
                     st.success("Coefficients enregistrés.")
-                except Exception as e:
+            except Exception as e:
                     st.error("❌ Impossible d'enregistrer les coefficients (écriture disque).")
                     st.caption(f"Dossier config: {store.info().get('base_dir','')}")
-                    st.code(repr(e))
+                st.code(repr(e))
 
         with ctab2:
             dfu = pd.DataFrame({"unit": units})
@@ -285,10 +285,10 @@ with st.sidebar:
                 try:
                     store.save_units([u for u in dfu_edit["unit"].astype(str).tolist() if u.strip()])
                     st.success("Unités enregistrées.")
-                except Exception as e:
+            except Exception as e:
                     st.error("❌ Impossible d'enregistrer les unités (écriture disque).")
                     st.caption(f"Dossier config: {store.info().get('base_dir','')}")
-                    st.code(repr(e))
+                st.code(repr(e))
 
         with ctab3:
             # ✅ IMPORTANT : forcer les colonnes même si suppliers est vide,
@@ -332,10 +332,10 @@ with st.sidebar:
                 try:
                     store.save_suppliers(recs)
                     st.success("Fournisseurs enregistrés.")
-                except Exception as e:
+            except Exception as e:
                     st.error("❌ Impossible d'enregistrer les fournisseurs (écriture disque).")
                     st.caption(f"Dossier config: {store.info().get('base_dir','')}")
-                    st.code(repr(e))
+                st.code(repr(e))
 
 if not planning_file or not menu_file:
     st.info("Charge le planning et le menu pour afficher les tableaux et générer les documents.")
@@ -492,7 +492,7 @@ try:
             if bc_filled is not None:
                 try:
                     df_filled = _read_excel_any(bc_filled, sheet_name="Bon de commande")
-                except Exception:
+            except Exception:
                     df_filled = _read_excel_any(bc_filled)
 
                 out_xlsx = _temp_out_path(".xlsx")
@@ -722,9 +722,9 @@ try:
                             f"Corrections appliquées : {n_removed} ligne(s) remplacée(s) / supprimée(s), "
                             f"{n_added} ligne(s) importée(s)."
                         )
-                except Exception as e:
+            except Exception as e:
                     st.error("Impossible d'importer ce fichier. Il doit provenir de l'export de l'app.")
-                    st.code(repr(e))
+                st.code(repr(e))
 
     with tab_factu_pdj:
         st.subheader("Facturation PDJ")
@@ -833,7 +833,7 @@ try:
                 df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0.0)
                 df = df[df["qty"] != 0].copy()
                 if df.empty:
-                    st.warning("Aucune quantité non nulle : rien à enregistrer.")
+                st.warning("Aucune quantité non nulle : rien à enregistrer.")
                 else:
                     df["date"] = pdj_date
                     df["site"] = pdj_site
@@ -887,7 +887,7 @@ try:
                 df["amount_eur"] = pd.to_numeric(df["amount_eur"], errors="coerce").fillna(0.0)
                 df = df[df["amount_eur"] != 0].copy()
                 if df.empty:
-                    st.warning("Aucun montant non nul : rien à ajouter.")
+                st.warning("Aucun montant non nul : rien à ajouter.")
                 else:
                     n = pdj_add_money_adjustments(df)
                     st.success(f"✅ Ajustements ajoutés : {n} ligne(s).")
@@ -959,7 +959,7 @@ try:
                 sel_name = st.selectbox("Choisir un export", options=list(options.keys()), key="pdj_saved_export_sel")
                 c1, c2 = st.columns([1, 1])
                 with c1:
-                    st.code(sel_name)
+                st.code(sel_name)
                 with c2:
                     if st.button("🗑️ Supprimer cet export", key="pdj_saved_export_del"):
                         ok = pdj_billing.delete_saved_export(options[sel_name])
@@ -1080,7 +1080,7 @@ try:
                 )
 
                 if missing:
-                    st.warning(
+                st.warning(
                         "Certains plats n'ont pas été trouvés dans le référentiel. "
                         "Ils sont listés dans l'onglet _plats_non_trouves du classeur."
                     )
