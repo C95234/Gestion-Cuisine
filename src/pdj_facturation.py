@@ -11,16 +11,8 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-# PDF -> image (optionnel)
-# PyMuPDF s'installe via `pymupdf` mais s'importe avec `import fitz`.
-# Sur certains environnements (Streamlit Cloud / serveurs verrouillés),
-# la dépendance peut être absente : on évite alors de faire planter toute l'app.
-try:
-    import fitz  # type: ignore  # pymupdf
-    HAS_FITZ = True
-except Exception:
-    fitz = None  # type: ignore
-    HAS_FITZ = False
+# PDF -> image
+import fitz  # pymupdf
 from PIL import Image, ImageOps, ImageEnhance
 # OCR (requis pour PDF scanné)
 import pytesseract
@@ -201,11 +193,6 @@ def _normalize_product_name(raw: str) -> str:
 
 
 def _pdf_to_images(pdf_bytes: bytes, dpi_scale: float = 2.0) -> List[Image.Image]:
-    if not HAS_FITZ or fitz is None:
-        raise RuntimeError(
-            "Import PDF indisponible: PyMuPDF (pymupdf) n'est pas installé. "
-            "Installe-le avec `pip install pymupdf` pour activer la lecture des PDF."
-        )
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     images: List[Image.Image] = []
     for page in doc:
