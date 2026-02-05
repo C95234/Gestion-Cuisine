@@ -67,19 +67,13 @@ def _import_or_stop():
         importlib.reload(pdj_billing)
 
         # Import parseur PDJ (lecture bons PDF/Excel + OCR best-effort)
-        # ⚠️ Optionnel : peut dépendre de PyMuPDF (import fitz) selon les features.
-        # Si la dépendance n'est pas présente, on n'empêche PAS le reste de l'app de tourner.
+        # ⚠️ Dépendances optionnelles (PyMuPDF/fitz, tesseract...) :
+        # on ne fait pas planter toute l'app si elles manquent.
         try:
             pdj_facturation = importlib.import_module("src.pdj_facturation")
             importlib.reload(pdj_facturation)
-        except Exception as e:
+        except Exception as _e:
             pdj_facturation = None
-            st.warning(
-                "⚠️ Module PDJ (import automatique PDF) indisponible : "
-                f"{e}.\n\n"
-                "L'application reste utilisable. Pour activer l'import PDF PDJ, installe `pymupdf` "
-                "(ex: `python -m pip install pymupdf`)."
-            )
 
         # Import allergènes
         learner = importlib.import_module("src.allergens.learner")
@@ -768,8 +762,8 @@ try:
         if pdj_file is not None:
             if pdj_facturation is None:
                 st.warning(
-                    "Import automatique PDJ indisponible (dépendance manquante : PyMuPDF / `fitz`). "
-                    "Tu peux quand même saisir les quantités manuellement, ou importer un Excel."
+                    "📎 Import de bons PDJ indisponible sur cet environnement (dépendances PDF/OCR manquantes). "
+                    "Tu peux saisir manuellement les quantités ci-dessous."
                 )
             else:
                 try:
