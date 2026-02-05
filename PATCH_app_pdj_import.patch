@@ -1,0 +1,86 @@
+--- app.py.orig	2026-02-04 16:24:18.134438892 +0000
++++ app.py	2026-02-04 16:25:13.104133068 +0000
+@@ -65,6 +65,12 @@
+         # Import facturation PDJ
+         pdj_billing = importlib.import_module("src.pdj_billing")
+         importlib.reload(pdj_billing)
++        # Parser PDJ (lecture intelligente des bons). Optionnel: si dépendances OCR absentes, l'app continue en mode manuel.
++        try:
++            pdj_factu = importlib.import_module("src.pdj_facturation")
++            importlib.reload(pdj_factu)
++        except Exception:
++            pdj_factu = None
+ 
+         # Import allergènes
+         learner = importlib.import_module("src.allergens.learner")
+@@ -73,7 +79,7 @@
+         generator = importlib.import_module("src.allergens.generator")
+         importlib.reload(generator)
+ 
+-        return processor, cs, order_forms, billing, pdj_billing, learner, generator
++        return processor, cs, order_forms, billing, pdj_billing, pdj_factu, learner, generator
+ 
+     except Exception as e:
+         st.error("💥 Erreur lors d’un import (module src.*)")
+@@ -82,7 +88,7 @@
+         st.stop()
+ 
+ 
+-processor, cs, order_forms, billing, pdj_billing, learner, generator = _import_or_stop()
++processor, cs, order_forms, billing, pdj_billing, pdj_factu, learner, generator = _import_or_stop()
+ 
+ # Exports processor
+ parse_planning_fabrication = processor.parse_planning_fabrication
+@@ -732,6 +738,7 @@
+             pdj_date = st.date_input("Date du bon (commande/livraison)", value=today, key="pdj_date")
+         with c2:
+             pdj_site = st.text_input("Site (ex: 24 ter, 24 simple, MAS TL...)", value="", key="pdj_site")
++            # Si le parser a détecté un site après import, on le mettra dans session_state plus bas.
+         with c3:
+             pdj_source = st.text_input("Référence (optionnel)", value="", key="pdj_source")
+ 
+@@ -742,15 +749,38 @@
+         )
+ 
+         st.caption(
+-            "Saisie **manuelle** (mode fiable) : une ligne = 1 produit. "
+-            "Astuce : laisse à 0 les produits non consommés. "
+-            "Le fichier importé sert uniquement de pièce jointe / référence (pas de lecture OCR)."
++            "Le tableau ci-dessous est **modifiable manuellement** (mode fiable). "
++            "Si tu importes un bon (Excel/PDF), l'app tente de pré-remplir les quantités automatiquement; "
++            "sinon tu peux saisir/corriger à la main (recommandé pour les scans difficiles)."
+         )
+ 
+-        # Table de saisie pré-remplie (sans OCR : plus robuste)
++        # Table de saisie pré-remplie. Si un fichier est fourni, tentative de parsing (sans bloquer si échec).
+         base_rows = pd.DataFrame({"product": pdj_default_products, "qty": 0.0})
+-        if pdj_file is not None:
+-            st.info("📎 Bon importé en référence. Renseigne les quantités manuellement ci-dessous.")
++        if pdj_file is not None and pdj_factu is not None:
++            try:
++                parsed = pdj_factu.parse_pdj_order_file(pdj_file)
++                if (not str(pdj_site).strip()) and getattr(parsed, "site", None):
++                    pdj_site = str(parsed.site)
++                    st.info(f"📍 Site détecté automatiquement : **{pdj_site}** (modifiable)")
++                if getattr(parsed, "items", None):
++                    # Injecte les quantités trouvées (mapping sur produit, en gardant la liste complète éditable)
++                    d = {str(p).strip(): float(q) for (p, q) in parsed.items if q is not None}
++                    base_rows["qty"] = base_rows["product"].map(lambda x: d.get(str(x).strip(), 0.0))
++                    st.success(f"✅ Bon lu : {len(d)} ligne(s) reconnue(s). Tu peux corriger manuellement si besoin.")
++                else:
++                    st.warning("Bon importé, mais aucune ligne n'a pu être reconnue automatiquement. Saisie manuelle requise.")
++            except Exception as e:
++                st.warning("Bon importé, mais lecture automatique impossible sur ce fichier. Saisie manuelle requise.")
++        elif pdj_file is not None:
++            st.info("📎 Bon importé. Lecture automatique indisponible (parser non chargé). Saisis les quantités manuellement.")
++
++        # Synchronise le champ site si détection automatique
++        try:
++            if str(pdj_site).strip():
++                st.session_state["pdj_site"] = str(pdj_site)
++        except Exception:
++            pass
++
+         pdj_table = st.data_editor(
+             base_rows,
+             use_container_width=True,
