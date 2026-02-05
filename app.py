@@ -67,13 +67,16 @@ def _import_or_stop():
         importlib.reload(pdj_billing)
 
         # Import parseur PDJ (lecture bons PDF/Excel + OCR best-effort)
-        # ⚠️ Dépendances optionnelles (PyMuPDF/fitz, tesseract...) :
-        # on ne fait pas planter toute l'app si elles manquent.
+        # Optionnel : certaines plateformes n'ont pas PyMuPDF (import fitz).
+        # Si absent, l'app doit continuer à fonctionner (saisie manuelle toujours possible).
+        pdj_facturation = None
         try:
             pdj_facturation = importlib.import_module("src.pdj_facturation")
             importlib.reload(pdj_facturation)
-        except Exception as _e:
-            pdj_facturation = None
+        except ModuleNotFoundError as e:
+            # Ne bloque pas le démarrage si fitz/PyMuPDF manque.
+            if "fitz" not in str(e):
+                raise
 
         # Import allergènes
         learner = importlib.import_module("src.allergens.learner")
@@ -264,10 +267,10 @@ with st.sidebar:
                 try:
                     store.save_coefficients(dfc_edit.to_dict("records"))
                     st.success("Coefficients enregistrés.")
-                except Exception as e:
+            except Exception as e:
                     st.error("❌ Impossible d'enregistrer les coefficients (écriture disque).")
                     st.caption(f"Dossier config: {store.info().get('base_dir','')}")
-                    st.code(repr(e))
+                st.code(repr(e))
 
         with ctab2:
             dfu = pd.DataFrame({"unit": units})
@@ -282,10 +285,10 @@ with st.sidebar:
                 try:
                     store.save_units([u for u in dfu_edit["unit"].astype(str).tolist() if u.strip()])
                     st.success("Unités enregistrées.")
-                except Exception as e:
+            except Exception as e:
                     st.error("❌ Impossible d'enregistrer les unités (écriture disque).")
                     st.caption(f"Dossier config: {store.info().get('base_dir','')}")
-                    st.code(repr(e))
+                st.code(repr(e))
 
         with ctab3:
             # ✅ IMPORTANT : forcer les colonnes même si suppliers est vide,
@@ -329,10 +332,10 @@ with st.sidebar:
                 try:
                     store.save_suppliers(recs)
                     st.success("Fournisseurs enregistrés.")
-                except Exception as e:
+            except Exception as e:
                     st.error("❌ Impossible d'enregistrer les fournisseurs (écriture disque).")
                     st.caption(f"Dossier config: {store.info().get('base_dir','')}")
-                    st.code(repr(e))
+                st.code(repr(e))
 
 if not planning_file or not menu_file:
     st.info("Charge le planning et le menu pour afficher les tableaux et générer les documents.")
@@ -489,7 +492,7 @@ try:
             if bc_filled is not None:
                 try:
                     df_filled = _read_excel_any(bc_filled, sheet_name="Bon de commande")
-                except Exception:
+            except Exception:
                     df_filled = _read_excel_any(bc_filled)
 
                 out_xlsx = _temp_out_path(".xlsx")
@@ -719,9 +722,9 @@ try:
                             f"Corrections appliquées : {n_removed} ligne(s) remplacée(s) / supprimée(s), "
                             f"{n_added} ligne(s) importée(s)."
                         )
-                except Exception as e:
+            except Exception as e:
                     st.error("Impossible d'importer ce fichier. Il doit provenir de l'export de l'app.")
-                    st.code(repr(e))
+                st.code(repr(e))
 
     with tab_factu_pdj:
         st.subheader("Facturation PDJ")
@@ -759,58 +762,52 @@ try:
         # Table de saisie pré-remplie (avec pré-lecture best-effort)
         base_rows = pd.DataFrame({"product": pdj_default_products, "qty": 0.0})
 
+
         if pdj_file is not None:
-            if pdj_facturation is None:
-                st.warning(
-                    "📎 Import de bons PDJ indisponible sur cet environnement (dépendances PDF/OCR manquantes). "
-                    "Tu peux saisir manuellement les quantités ci-dessous."
-                )
-            else:
-                try:
-                    parsed = pdj_facturation.parse_pdj_order_file(pdj_file)
-                    items = getattr(parsed, "items", []) or []
-                    detected_site = getattr(parsed, "site", None)
+            try:
+                parsed = pdj_facturation.parse_pdj_order_file(pdj_file)
+                items = getattr(parsed, "items", []) or []
+                detected_site = getattr(parsed, "site", None)
 
-                    # Pré-remplissage du champ site si vide
-                    if detected_site and not str(st.session_state.get("pdj_site", "")).strip():
-                        st.session_state["pdj_site"] = str(detected_site)
+                # Pré-remplissage du champ site si vide
+                if detected_site and not str(st.session_state.get("pdj_site", "")).strip():
+                    st.session_state["pdj_site"] = str(detected_site)
 
-                    # Pré-remplissage des quantités (matching souple)
-                    def _k(s: str) -> str:
-                        return " ".join(str(s or "").strip().lower().split())
+                # Pré-remplissage des quantités (matching souple)
+                def _k(s: str) -> str:
+                    return " ".join(str(s or "").strip().lower().split())
 
-                    items_map = {_k(p): float(q) for (p, q) in items if p and q is not None}
-                    used = set()
+                items_map = { _k(p): float(q) for (p, q) in items if p and q is not None }
+                used = set()
 
-                    # Remplit d'abord les produits déjà dans la liste
-                    for i, prod in enumerate(list(base_rows["product"])):
-                        k = _k(prod)
-                        if k in items_map:
-                            base_rows.loc[i, "qty"] = items_map[k]
-                            used.add(k)
-                        else:
-                            # fallback: contient / ressemble (OCR)
-                            for kk, vv in items_map.items():
-                                if kk in k or k in kk:
-                                    base_rows.loc[i, "qty"] = vv
-                                    used.add(kk)
-                                    break
+                # Remplit d'abord les produits déjà dans la liste
+                for i, prod in enumerate(list(base_rows["product"])):
+                    k = _k(prod)
+                    if k in items_map:
+                        base_rows.loc[i, "qty"] = items_map[k]
+                        used.add(k)
+                    else:
+                        # fallback: contient / ressemble (OCR)
+                        for kk, vv in items_map.items():
+                            if kk in k or k in kk:
+                                base_rows.loc[i, "qty"] = vv
+                                used.add(kk)
+                                break
 
-                    # Ajoute les produits non reconnus dans la liste par défaut
-                    extra = [(p, q) for (p, q) in items if _k(p) not in used]
-                    if extra:
-                        extra_df = pd.DataFrame(
-                            {"product": [p for p, _ in extra], "qty": [float(q) for _, q in extra]}
-                        )
-                        base_rows = pd.concat([base_rows, extra_df], ignore_index=True)
+                # Ajoute les produits non reconnus dans la liste par défaut
+                extra = [(p, q) for (p, q) in items if _k(p) not in used]
+                if extra:
+                    extra_df = pd.DataFrame({"product": [p for p, _ in extra], "qty": [float(q) for _, q in extra]})
+                    base_rows = pd.concat([base_rows, extra_df], ignore_index=True)
 
-                    msg = "📎 Bon importé : pré-remplissage effectué (à vérifier / corriger si besoin)."
-                    if detected_site:
-                        msg += f" Site détecté : **{detected_site}**."
-                    st.info(msg)
-                except Exception as e:
-                    st.warning("📎 Bon importé, mais lecture automatique impossible. Saisie manuelle requise.")
-                    st.code(repr(e))
+                msg = "📎 Bon importé : pré-remplissage effectué (à vérifier / corriger si besoin)."
+                if detected_site:
+                    msg += f" Site détecté : **{detected_site}**."
+                st.info(msg)
+            except Exception as e:
+                st.warning("📎 Bon importé, mais lecture automatique impossible. Saisie manuelle requise.")
+                st.code(repr(e))
+
         pdj_table = st.data_editor(
             base_rows,
             use_container_width=True,
@@ -836,7 +833,7 @@ try:
                 df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0.0)
                 df = df[df["qty"] != 0].copy()
                 if df.empty:
-                    st.warning("Aucune quantité non nulle : rien à enregistrer.")
+                st.warning("Aucune quantité non nulle : rien à enregistrer.")
                 else:
                     df["date"] = pdj_date
                     df["site"] = pdj_site
@@ -890,7 +887,7 @@ try:
                 df["amount_eur"] = pd.to_numeric(df["amount_eur"], errors="coerce").fillna(0.0)
                 df = df[df["amount_eur"] != 0].copy()
                 if df.empty:
-                    st.warning("Aucun montant non nul : rien à ajouter.")
+                st.warning("Aucun montant non nul : rien à ajouter.")
                 else:
                     n = pdj_add_money_adjustments(df)
                     st.success(f"✅ Ajustements ajoutés : {n} ligne(s).")
@@ -962,7 +959,7 @@ try:
                 sel_name = st.selectbox("Choisir un export", options=list(options.keys()), key="pdj_saved_export_sel")
                 c1, c2 = st.columns([1, 1])
                 with c1:
-                    st.code(sel_name)
+                st.code(sel_name)
                 with c2:
                     if st.button("🗑️ Supprimer cet export", key="pdj_saved_export_del"):
                         ok = pdj_billing.delete_saved_export(options[sel_name])
@@ -1083,7 +1080,7 @@ try:
                 )
 
                 if missing:
-                    st.warning(
+                st.warning(
                         "Certains plats n'ont pas été trouvés dans le référentiel. "
                         "Ils sont listés dans l'onglet _plats_non_trouves du classeur."
                     )
