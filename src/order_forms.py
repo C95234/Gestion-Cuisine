@@ -36,14 +36,13 @@ def _supplier_lookup(suppliers: List[Dict[str, str]]) -> Dict[str, SupplierInfo]
 
 def group_lines_for_order(df: pd.DataFrame) -> pd.DataFrame:
     """Bon fournisseur (lisible) :
-    - Regroupe par Produit + Unité + Livraison (+ Prix/Poids si présents)
-    - Somme des Quantités (+ Prix cible total / Poids total si présents)
-    - Sortie : Produit | Quantité | Unité | Livraison | Prix cible unitaire | Prix cible total | Poids total (kg)
+    - Regroupe par Produit + Unité (et Livraison si présente)
+    - Somme des Quantités, Poids total, Prix cible total
+    - Conserve le Prix cible unitaire si unique, sinon vide.
     """
-    base_cols = ["Produit", "Quantité", "Unité", "Livraison", "Prix cible unitaire", "Prix cible total", "Poids total (kg)"]
-
+    cols = ["Produit", "Quantité", "Unité", "Prix cible unitaire", "Prix cible total", "Poids total (kg)", "Livraison"]
     if df is None or df.empty:
-        return pd.DataFrame(columns=base_cols)
+        return pd.DataFrame(columns=cols)
 
     d = df.copy()
 
@@ -53,7 +52,7 @@ def group_lines_for_order(df: pd.DataFrame) -> pd.DataFrame:
     elif "Produit" not in d.columns:
         d["Produit"] = ""
 
-    # Unité
+    # Unité : tolère plusieurs noms de colonnes possibles
     unit_col = None
     for cand in ["Unité", "Unite", "Unité", "U", "Unites"]:
         if cand in d.columns:
@@ -61,49 +60,57 @@ def group_lines_for_order(df: pd.DataFrame) -> pd.DataFrame:
             break
     d["Unité"] = d[unit_col] if unit_col else ""
 
-    # Livraison
-    if "Livraison" not in d.columns:
-        d["Livraison"] = ""
-
-    # Prix / poids
-    for c in ["Prix cible unitaire", "Prix cible total", "Poids unitaire (kg)", "Poids total (kg)"]:
-        if c not in d.columns:
-            d[c] = ""
-
+    # Normalisation
     d["Produit"] = d["Produit"].fillna("").astype(str).str.strip()
     d["Unité"] = d["Unité"].fillna("").astype(str).str.strip()
-    d["Livraison"] = d["Livraison"].fillna("").astype(str).str.strip()
+    d["Livraison"] = d.get("Livraison", "").fillna("").astype(str).str.strip()
 
     d["Quantité"] = pd.to_numeric(d.get("Quantité", 0), errors="coerce").fillna(0)
 
-    # calc poids total si pas fourni
-    wt = pd.to_numeric(d.get("Poids total (kg)"), errors="coerce")
-    wu = pd.to_numeric(d.get("Poids unitaire (kg)"), errors="coerce").fillna(0)
-    wt_calc = d["Quantité"] * wu
-    d["Poids total (kg)"] = wt.where(wt.notna() & (wt != 0), wt_calc).fillna(0)
+    pu = pd.to_numeric(d.get("Prix cible unitaire", 0), errors="coerce").fillna(0)
+    d["_pu"] = pu
+    d["_prix_total"] = d["Quantité"] * d["_pu"]
 
-    # calc prix cible total si pas fourni
-    pt = pd.to_numeric(d.get("Prix cible total"), errors="coerce")
-    pu = pd.to_numeric(d.get("Prix cible unitaire"), errors="coerce").fillna(0)
-    pt_calc = d["Quantité"] * pu
-    d["Prix cible total"] = pt.where(pt.notna() & (pt != 0), pt_calc).fillna(0)
+    if "Poids total (kg)" in d.columns:
+        d["_poids_total"] = pd.to_numeric(d.get("Poids total (kg)", 0), errors="coerce").fillna(0)
+    else:
+        wu = pd.to_numeric(d.get("Poids unitaire (kg)", 0), errors="coerce").fillna(0)
+        d["_poids_total"] = d["Quantité"] * wu
 
-    # keep unit price/weight unit as key to avoid mixing different prices
-    d["Prix cible unitaire"] = pd.to_numeric(d.get("Prix cible unitaire"), errors="coerce").fillna(0)
-    d["Poids unitaire (kg)"] = pd.to_numeric(d.get("Poids unitaire (kg)"), errors="coerce").fillna(0)
-
+    key_cols = ["Produit", "Unité", "Livraison"]
     grouped = (
-        d.groupby(["Produit", "Unité", "Livraison", "Prix cible unitaire", "Poids unitaire (kg)"], as_index=False)[
-            ["Quantité", "Prix cible total", "Poids total (kg)"]
-        ]
-        .sum()
-        .sort_values(["Livraison", "Produit", "Unité"])
+        d.groupby(key_cols, as_index=False)
+        .agg(
+            {
+                "Quantité": "sum",
+                "_prix_total": "sum",
+                "_poids_total": "sum",
+                "_pu": lambda s: s.dropna().unique().tolist(),
+            }
+        )
+        .sort_values(key_cols)
         .reset_index(drop=True)
     )
 
-    # reorder
-    grouped = grouped.rename(columns={"Poids total (kg)": "Poids total (kg)"})
-    return grouped[base_cols]
+    def _one_or_blank(v):
+        try:
+            uniq = [float(x) for x in v if x not in (None, "") and float(x) != 0.0]
+        except Exception:
+            uniq = []
+        if len(uniq) == 1:
+            return uniq[0]
+        return ""
+
+    grouped["Prix cible unitaire"] = grouped["_pu"].apply(_one_or_blank)
+    grouped["Prix cible total"] = grouped["_prix_total"].round(2)
+    grouped["Poids total (kg)"] = grouped["_poids_total"].round(3)
+
+    grouped = grouped.drop(columns=["_pu", "_prix_total", "_poids_total"])
+
+    for c in cols:
+        if c not in grouped.columns:
+            grouped[c] = ""
+    return grouped[cols]
 
 
 def export_orders_per_supplier_excel(
@@ -201,7 +208,7 @@ def export_orders_per_supplier_excel(
             lines = lines[lines["Quantité"].astype(float) > 0].reset_index(drop=True)
 
         # En-tête tableau
-        headers = ["Livraison","Produit", "Quantité", "Unité", "Prix cible unitaire", "Prix cible total", "Poids total (kg)"]
+        headers = ["Produit", "Quantité", "Unité", "Prix cible unitaire", "Prix cible total", "Poids total (kg)", "Livraison"]
         for c, h in enumerate(headers, start=1):
             cell = ws.cell(row=start_row, column=c)
             cell.value = h
@@ -214,61 +221,65 @@ def export_orders_per_supplier_excel(
         # Lignes
         for i, row in enumerate(lines.itertuples(index=False), start=1):
             rr = start_row + i
-            liv = getattr(row, "Livraison", "")
             prod = getattr(row, "Produit", "")
             qty = getattr(row, "Quantité", 0)
             unit = getattr(row, "Unité", "")
-            pcu = getattr(row, "Prix cible unitaire", 0)
-            pct = getattr(row, "Prix cible total", 0)
+            pu = getattr(row, "Prix cible unitaire", "")
+            pt = getattr(row, "Prix cible total", 0)
             wt = getattr(row, "Poids total (kg)", 0)
+            liv = getattr(row, "Livraison", "")
 
-            
-c0 = ws.cell(row=rr, column=1, value=liv)
-c0.alignment = left_align
-c0.border = border
+            c1 = ws.cell(row=rr, column=1, value=prod)
+            c1.alignment = left_align
+            c1.border = border
 
-c1 = ws.cell(row=rr, column=2, value=prod)
-c1.alignment = left_align
-c1.border = border
+            c2 = ws.cell(row=rr, column=2, value=float(qty) if qty != "" else "")
+            c2.number_format = "#,##0.##"
+            c2.alignment = right_align
+            c2.border = border
 
-c2 = ws.cell(row=rr, column=3, value=float(qty) if qty != "" else "")
-c2.number_format = "#,##0.##"
-c2.alignment = right_align
-c2.border = border
+            c3 = ws.cell(row=rr, column=3, value=unit)
+            c3.alignment = left_align
+            c3.border = border
 
-c3 = ws.cell(row=rr, column=4, value=unit)
-c3.alignment = left_align
-c3.border = border
 
-c4 = ws.cell(row=rr, column=5, value=float(pcu) if pcu != "" else "")
-c4.number_format = "#,##0.00"
-c4.alignment = right_align
-c4.border = border
+            c4 = ws.cell(row=rr, column=4, value=pu)
+            c4.number_format = "#,##0.00"
+            c4.alignment = right_align
+            c4.border = border
 
-c5 = ws.cell(row=rr, column=6, value=float(pct) if pct != "" else "")
-c5.number_format = "#,##0.00"
-c5.alignment = right_align
-c5.border = border
+            c5 = ws.cell(row=rr, column=5, value=float(pt) if pt != "" else "")
+            c5.number_format = "#,##0.00"
+            c5.alignment = right_align
+            c5.border = border
 
-c6 = ws.cell(row=rr, column=7, value=float(wt) if wt != "" else "")
-c6.number_format = "#,##0.00"
-c6.alignment = right_align
-c6.border = border
+            c6 = ws.cell(row=rr, column=6, value=float(wt) if wt != "" else "")
+            c6.number_format = "#,##0.000"
+            c6.alignment = right_align
+            c6.border = border
 
-if i % 2 == 0:
-    for cc in [c0,c1,c2,c3,c4,c5,c6]:
-        cc.fill = zebra_fill
+            c7 = ws.cell(row=rr, column=7, value=liv)
+            c7.alignment = left_align
+            c7.border = border
+
+            if i % 2 == 0:
+                c1.fill = zebra_fill
+                c2.fill = zebra_fill
+                c3.fill = zebra_fill
+                c4.fill = zebra_fill
+                c5.fill = zebra_fill
+                c6.fill = zebra_fill
+                c7.fill = zebra_fill
 
         # Mise en page
         ws.freeze_panes = ws.cell(row=start_row + 1, column=1)
-        ws.column_dimensions["A"].width = 18
-        ws.column_dimensions["B"].width = 52
-        ws.column_dimensions["C"].width = 14
-        ws.column_dimensions["D"].width = 12
-        ws.column_dimensions["E"].width = 16
+        ws.column_dimensions["A"].width = 52
+        ws.column_dimensions["B"].width = 14
+        ws.column_dimensions["C"].width = 12
+        ws.column_dimensions["D"].width = 18
+        ws.column_dimensions["E"].width = 18
         ws.column_dimensions["F"].width = 16
-        ws.column_dimensions["G"].width = 16
-
+        ws.column_dimensions["G"].width = 18
         ws.print_title_rows = f"{start_row}:{start_row}"
         ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
         ws.page_setup.fitToWidth = 1
@@ -432,7 +443,7 @@ def export_orders_per_supplier_pdf(
             story.append(Paragraph("<br/>".join(meta_lines), meta_style))
             story.append(Spacer(1, 10))
 
-        data = [["Livraison","Produit", "Quantité", "Unité", "Prix cible total", "Poids total (kg)"]]
+        data = [["Produit", "Quantité", "Unité"]]
         for _, r in lines.iterrows():
             prod = str(r.get("Produit", "") or "").strip()
             qty = r.get("Quantité", 0)
@@ -443,22 +454,9 @@ def export_orders_per_supplier_pdf(
                     qty_txt = f"{float(qty):g}"
                 except Exception:
                     qty_txt = str(qty)
-            liv = str(r.get("Livraison","") or "").strip()
-            pct = r.get("Prix cible total", 0)
-            wt = r.get("Poids total (kg)", 0)
-            pct_txt = ""
-            wt_txt = ""
-            try:
-                pct_txt = f"{float(pct):.2f}" if pd.notna(pct) else ""
-            except Exception:
-                pct_txt = str(pct) if pct is not None else ""
-            try:
-                wt_txt = f"{float(wt):.2f}" if pd.notna(wt) else ""
-            except Exception:
-                wt_txt = str(wt) if wt is not None else ""
-            data.append([liv, Paragraph(prod, cell_style), qty_txt, unit, pct_txt, wt_txt])
+            data.append([Paragraph(prod, cell_style), qty_txt, unit])
 
-        col_widths = [doc.width * 0.16, doc.width * 0.40, doc.width * 0.12, doc.width * 0.12, doc.width * 0.10, doc.width * 0.10]
+        col_widths = [doc.width * 0.64, doc.width * 0.18, doc.width * 0.18]
         t = Table(data, colWidths=col_widths, repeatRows=1)
 
         style_cmds = [
@@ -466,10 +464,9 @@ def export_orders_per_supplier_pdf(
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#1F1F1F")),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("FONTSIZE", (0, 0), (-1, 0), 9),
-            ("ALIGN", (0, 0), (1, -1), "LEFT"),
-            ("ALIGN", (2, 1), (2, -1), "RIGHT"),
-            ("ALIGN", (3, 1), (3, -1), "LEFT"),
-            ("ALIGN", (4, 1), (5, -1), "RIGHT"),
+            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+            ("ALIGN", (2, 1), (2, -1), "LEFT"),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D0D0D0")),
             ("LEFTPADDING", (0, 0), (-1, -1), 6),
