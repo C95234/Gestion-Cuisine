@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-# Défaut: éviter crash à l'import si du code au niveau module utilise `headers`
-headers: dict = {}
-
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import re
@@ -19,7 +16,6 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 DAY_NAMES = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
-
 
 
 # --- Définitions défensives pour éviter des NameError à l'import ---
