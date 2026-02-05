@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Défaut: éviter crash à l'import si du code au niveau module utilise `headers`
+headers: dict = {}
+
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import re
