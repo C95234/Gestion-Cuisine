@@ -243,24 +243,24 @@ def export_orders_per_supplier_excel(
             c3.border = border
 
 
-c4 = ws.cell(row=rr, column=4, value=pu)
-c4.number_format = "#,##0.00"
-c4.alignment = right_align
-c4.border = border
+            c4 = ws.cell(row=rr, column=4, value=pu)
+            c4.number_format = "#,##0.00"
+            c4.alignment = right_align
+            c4.border = border
 
-c5 = ws.cell(row=rr, column=5, value=float(pt) if pt != "" else "")
-c5.number_format = "#,##0.00"
-c5.alignment = right_align
-c5.border = border
+            c5 = ws.cell(row=rr, column=5, value=float(pt) if pt != "" else "")
+            c5.number_format = "#,##0.00"
+            c5.alignment = right_align
+            c5.border = border
 
-c6 = ws.cell(row=rr, column=6, value=float(wt) if wt != "" else "")
-c6.number_format = "#,##0.000"
-c6.alignment = right_align
-c6.border = border
+            c6 = ws.cell(row=rr, column=6, value=float(wt) if wt != "" else "")
+            c6.number_format = "#,##0.000"
+            c6.alignment = right_align
+            c6.border = border
 
-c7 = ws.cell(row=rr, column=7, value=liv)
-c7.alignment = left_align
-c7.border = border
+            c7 = ws.cell(row=rr, column=7, value=liv)
+            c7.alignment = left_align
+            c7.border = border
 
             if i % 2 == 0:
                 c1.fill = zebra_fill
