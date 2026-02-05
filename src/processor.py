@@ -1630,7 +1630,6 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
         grouped["Unité"] = "unité"
         grouped["Fournisseur"] = ""
         grouped["Libellé"] = grouped["Produit"].astype(str)
-                # --- Colonnes cible & livraisons (édition manuelle) ---
         grouped["Prix cible unitaire"] = ""
         grouped["Prix cible total"] = ""
         grouped["Poids unitaire (kg)"] = ""
@@ -1728,11 +1727,11 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
     if "Libellé" not in grouped.columns:
         grouped["Libellé"] = grouped["Produit"].astype(str)
 
-    
-    # --- Colonnes cible & livraisons (édition manuelle) ---
-    for _c in ["Prix cible unitaire","Prix cible total","Poids unitaire (kg)","Poids total (kg)","Livraison"]:
-        if _c not in grouped.columns:
-            grouped[_c] = ""
+    grouped["Prix cible unitaire"] = ""
+    grouped["Prix cible total"] = ""
+    grouped["Poids unitaire (kg)"] = ""
+    grouped["Poids total (kg)"] = ""
+    grouped["Livraison"] = ""
 
     grouped = grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Libellé", "Effectif", "Coefficient", "Unité", "Fournisseur", "Quantité", "Prix cible unitaire", "Prix cible total", "Poids unitaire (kg)", "Poids total (kg)", "Livraison"]]
     return grouped.sort_values(["Repas", "Typologie", "Produit"]).reset_index(drop=True)
@@ -1919,11 +1918,6 @@ def export_excel(
         col_unit = headers.get("unité") or headers.get("unite")
         col_sup = headers.get("fournisseur")
         col_qty = headers.get("quantité") or headers.get("quantite")
-        col_pcu = headers.get("prix cible unitaire")
-        col_pct = headers.get("prix cible total")
-        col_wu = headers.get("poids unitaire (kg)")
-        col_wt = headers.get("poids total (kg)")
-        col_del = headers.get("livraison")
 
         # ----------------- Validations (listes déroulantes) -----------------
         n_coef = len(coefficients)
@@ -1980,24 +1974,32 @@ def export_excel(
                 # optionnel: format numérique propre
                 ws_bc.cell(row=r, column=col_qty).number_format = "0"
 
-        
-        # ----------------- Formules poids & prix cible -----------------
-        # Prix cible total = Quantité * Prix cible unitaire
-        # Poids total (kg) = Quantité * Poids unitaire (kg)
-        if col_qty and col_pcu and col_pct:
-            ql = openpyxl.utils.get_column_letter(col_qty)
-            pul = openpyxl.utils.get_column_letter(col_pcu)
-            for r in range(2, ws_bc.max_row + 1):
-                ws_bc.cell(row=r, column=col_pct).value = f"=IFERROR({ql}{r}*{pul}{r},"")"
-                ws_bc.cell(row=r, column=col_pct).number_format = "#,##0.00"
 
-        if col_qty and col_wu and col_wt:
-            ql = openpyxl.utils.get_column_letter(col_qty)
-            wul = openpyxl.utils.get_column_letter(col_wu)
+        # ----------------- Formules Prix/Poids (cibles) -----------------
+        # Prix cible total = Quantité * Prix cible unitaire (si les 2 sont renseignés)
+        # Poids total (kg) = Quantité * Poids unitaire (kg) (si les 2 sont renseignés)
+        col_pu = headers.get("prix cible unitaire")
+        col_pt = headers.get("prix cible total")
+        col_wu = headers.get("poids unitaire (kg)") or headers.get("poids unitaire")
+        col_wt = headers.get("poids total (kg)") or headers.get("poids total")
+        if col_qty and col_pu and col_pt:
+            qty_letter = openpyxl.utils.get_column_letter(col_qty)
+            pu_letter = openpyxl.utils.get_column_letter(col_pu)
             for r in range(2, ws_bc.max_row + 1):
-                ws_bc.cell(row=r, column=col_wt).value = f"=IFERROR({ql}{r}*{wul}{r},"")"
-                ws_bc.cell(row=r, column=col_wt).number_format = "#,##0.00"
-# ----------------- Styles -----------------
+                ws_bc.cell(row=r, column=col_pt).value = (
+                    f'=IF(OR({qty_letter}{r}="",{pu_letter}{r}=""),"",{qty_letter}{r}*{pu_letter}{r})'
+                )
+                ws_bc.cell(row=r, column=col_pt).number_format = '#,##0.00'
+        if col_qty and col_wu and col_wt:
+            qty_letter = openpyxl.utils.get_column_letter(col_qty)
+            wu_letter = openpyxl.utils.get_column_letter(col_wu)
+            for r in range(2, ws_bc.max_row + 1):
+                ws_bc.cell(row=r, column=col_wt).value = (
+                    f'=IF(OR({qty_letter}{r}="",{wu_letter}{r}=""),"",{qty_letter}{r}*{wu_letter}{r})'
+                )
+                ws_bc.cell(row=r, column=col_wt).number_format = '#,##0.000'
+
+        # ----------------- Styles -----------------
         thin = Side(style="thin", color="9E9E9E")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
         header_fill = PatternFill("solid", fgColor="EDEDED")
@@ -2084,102 +2086,3 @@ def export_excel(
 
             ws.page_setup.fitToWidth = 1
             ws.page_setup.fitToHeight = 0
-
-
-
-def assign_deliveries_by_weight(
-    bon_df: pd.DataFrame,
-    delivery_labels: List[str],
-    *,
-    max_kg: float = 50.0,
-    delivery_col: str = "Livraison",
-    weight_total_col: str = "Poids total (kg)",
-    weight_unit_col: str = "Poids unitaire (kg)",
-    qty_col: str = "Quantité",
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Assigne automatiquement une livraison à chaque ligne en respectant un poids max par livraison.
-
-    - Si la colonne 'Livraison' est déjà renseignée, elle est conservée.
-    - Le poids par ligne est calculé via 'Poids total (kg)' si présent, sinon Quantité * 'Poids unitaire (kg)'.
-    - Algorithme: greedy (remplit la livraison 1 puis 2, etc.).
-    - Retourne (df_assigné, résumé_par_livraison).
-    """
-    df = bon_df.copy() if bon_df is not None else pd.DataFrame()
-    if df.empty:
-        return df, pd.DataFrame(columns=[delivery_col, "Poids total (kg)", "Prix cible total"])
-
-    if delivery_col not in df.columns:
-        df[delivery_col] = ""
-
-    if not delivery_labels:
-        delivery_labels = ["Livraison 1"]
-
-    # calc poids ligne
-    def _num(s):
-        return pd.to_numeric(s, errors="coerce")
-
-    wt = _num(df.get(weight_total_col))
-    if wt is None:
-        wt = pd.Series([None]*len(df))
-    # if wt missing, compute from unit weight
-    wu = _num(df.get(weight_unit_col))
-    qty = _num(df.get(qty_col)).fillna(0)
-    computed = qty * wu.fillna(0)
-    line_w = wt.where(wt.notna() & (wt != 0), computed)
-    line_w = line_w.fillna(0)
-
-    # prices
-    price_total = _num(df.get("Prix cible total")).fillna(0)
-
-    # where delivery already set, keep and track usage
-    used = {lab: 0.0 for lab in delivery_labels}
-    used_price = {lab: 0.0 for lab in delivery_labels}
-
-    cur_idx = 0
-    assigned = []
-    for i in range(len(df)):
-        cur = str(df.at[i, delivery_col] or "").strip()
-        w = float(line_w.iat[i]) if i < len(line_w) else 0.0
-        pt = float(price_total.iat[i]) if i < len(price_total) else 0.0
-
-        if cur:
-            # if unknown label, keep as-is
-            if cur not in used:
-                used[cur] = 0.0
-                used_price[cur] = 0.0
-            used[cur] += w
-            used_price[cur] += pt
-            assigned.append(cur)
-            continue
-
-        # find first delivery that fits; else move forward / create overflow
-        placed = False
-        for _ in range(len(delivery_labels) - cur_idx + 1):
-            lab = delivery_labels[cur_idx] if cur_idx < len(delivery_labels) else delivery_labels[-1]
-            if used.get(lab, 0.0) + w <= max_kg or used.get(lab, 0.0) == 0.0:
-                assigned.append(lab)
-                used[lab] = used.get(lab, 0.0) + w
-                used_price[lab] = used_price.get(lab, 0.0) + pt
-                placed = True
-                break
-            cur_idx = min(cur_idx + 1, len(delivery_labels) - 1)
-        if not placed:
-            lab = delivery_labels[-1]
-            assigned.append(lab)
-            used[lab] = used.get(lab, 0.0) + w
-            used_price[lab] = used_price.get(lab, 0.0) + pt
-
-    df[delivery_col] = assigned
-
-    summary = (
-        pd.DataFrame(
-            {
-                delivery_col: list(used.keys()),
-                "Poids total (kg)": [used[k] for k in used.keys()],
-                "Prix cible total": [used_price.get(k, 0.0) for k in used.keys()],
-            }
-        )
-        .sort_values(delivery_col)
-        .reset_index(drop=True)
-    )
-    return df, summary
