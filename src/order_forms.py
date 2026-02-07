@@ -236,6 +236,21 @@ def export_orders_per_supplier_excel(
         name = (name or "Fournisseur").strip()[:28]
         return name or "Fournisseur"
 
+    def _safe_sheet_name_with_suffix(base: str, suffix: str) -> str:
+        """Nom d'onglet Excel compatible (31 caractères max, sans caractères interdits)."""
+        base = (base or "Fournisseur").strip()
+        suffix = (suffix or "").strip()
+        # Caractères interdits par Excel: : \ / ? * [ ]
+        for ch in [":", "\\", "/", "?", "*", "[", "]"]:
+            base = base.replace(ch, "-")
+            suffix = suffix.replace(ch, "-")
+        if not suffix:
+            name = base
+        else:
+            name = f"{base} - {suffix}"
+        name = name.strip() or "Fournisseur"
+        return name[:31]
+
     suppliers_in_df = [s for s in df["Fournisseur"].unique().tolist() if str(s).strip()]
     for supplier_name in sorted(suppliers_in_df):
         df_sup = df[df["Fournisseur"] == supplier_name].copy()
@@ -253,12 +268,19 @@ def export_orders_per_supplier_excel(
 
         for lot_idx, (lot_df, delivery_date) in enumerate(lots, start=1):
             title = _safe_sheet_name(supplier_name)
-            sheet_name = title if len(lots) == 1 else f"{title} ({lot_idx})"
+            # Si plusieurs lots : on préfère afficher la date de livraison plutôt que "(1/2)".
+            if delivery_date:
+                sheet_name = _safe_sheet_name_with_suffix(title, f"Liv {delivery_date}")
+            else:
+                sheet_name = title if len(lots) == 1 else _safe_sheet_name_with_suffix(title, f"Lot {lot_idx}/{len(lots)}")
             ws = wb.create_sheet(sheet_name)
 
             # En-tête
             ws.merge_cells("A1:E1")
-            ws["A1"].value = f"BON DE COMMANDE — {supplier_name}"
+            if delivery_date:
+                ws["A1"].value = f"BON DE COMMANDE — {supplier_name} — Livraison : {delivery_date}"
+            else:
+                ws["A1"].value = f"BON DE COMMANDE — {supplier_name}" + (f" (Lot {lot_idx}/{len(lots)})" if len(lots) > 1 else "")
             ws["A1"].font = title_font
             ws["A1"].fill = title_fill
             ws["A1"].alignment = Alignment(horizontal="left", vertical="center")
@@ -375,32 +397,50 @@ def export_orders_per_supplier_pdf(
         info = sup_map.get(supplier_name, SupplierInfo(name=supplier_name))
 
         for lot_idx, (lot_df, delivery_date) in enumerate(lots, start=1):
-            title = f"BON DE COMMANDE — {supplier_name}" + (f" ({lot_idx}/{len(lots)})" if len(lots) > 1 else "")
-            c.setFont("Helvetica-Bold", 14)
-            c.drawString(40, 810, title)
-
-            c.setFont("Helvetica", 9)
-            y = 792
-            if info.customer_code:
-                c.drawString(40, y, f"Code client : {info.customer_code}"); y -= 12
-            if info.coord1:
-                c.drawString(40, y, info.coord1); y -= 12
-            if info.coord2:
-                c.drawString(40, y, info.coord2); y -= 12
+            # Titre : on remplace "(1/2)" par la date de livraison si elle est fournie.
             if delivery_date:
-                c.drawString(360, 792, "Livraison :")
-                c.drawString(360, 780, str(delivery_date))
+                title = f"BON DE COMMANDE — {supplier_name} — Livraison : {delivery_date}"
+            else:
+                title = f"BON DE COMMANDE — {supplier_name}" + (f" (Lot {lot_idx}/{len(lots)})" if len(lots) > 1 else "")
 
-            # tableau
-            y_table = 740
-            c.setFont("Helvetica-Bold", 9)
-            c.drawString(40, y_table, "Produit")
-            c.drawString(270, y_table, "U")
-            c.drawRightString(330, y_table, "Qté")
-            c.drawRightString(420, y_table, "PU cible")
-            c.drawRightString(550, y_table, "Total")
-            y_table -= 14
+            def draw_page_header() -> float:
+                """Dessine l'en-tête + le header de tableau, et renvoie la position Y de départ des lignes."""
+                # Bandeau titre
+                c.setFillColorRGB(0.18, 0.34, 0.59)
+                c.rect(0, 800, 595, 40, fill=1, stroke=0)
+                c.setFillColorRGB(1, 1, 1)
+                c.setFont("Helvetica-Bold", 15)
+                c.drawString(40, 812, title)
 
+                # Infos fournisseur
+                c.setFillColorRGB(0, 0, 0)
+                c.setFont("Helvetica", 9)
+                y_info = 785
+                if info.customer_code:
+                    c.drawString(40, y_info, f"Code client : {info.customer_code}")
+                    y_info -= 12
+                if info.coord1:
+                    c.drawString(40, y_info, info.coord1)
+                    y_info -= 12
+                if info.coord2:
+                    c.drawString(40, y_info, info.coord2)
+                    y_info -= 12
+
+                # Tableau
+                y_table = 740
+                # Bande grisée pour l'entête du tableau
+                c.setFillColorRGB(0.9, 0.9, 0.9)
+                c.rect(35, y_table - 4, 530, 16, fill=1, stroke=0)
+                c.setFillColorRGB(0, 0, 0)
+                c.setFont("Helvetica-Bold", 9)
+                c.drawString(40, y_table, "Produit")
+                c.drawString(270, y_table, "Unité")
+                c.drawRightString(330, y_table, "Quantité")
+                c.drawRightString(420, y_table, "PU €")
+                c.drawRightString(550, y_table, "Total €")
+                return y_table - 14
+
+            y_table = draw_page_header()
             c.setFont("Helvetica", 9)
             total = 0.0
             for _, r in lot_df.iterrows():
@@ -427,11 +467,17 @@ def export_orders_per_supplier_pdf(
                 y_table -= 12
                 if y_table < 80:
                     c.showPage()
-                    y_table = 810
+                    y_table = draw_page_header()
 
-            c.setFont("Helvetica-Bold", 10)
-            c.drawRightString(500, max(y_table - 8, 60), "TOTAL :")
-            c.drawRightString(550, max(y_table - 8, 60), f"{total:.2f}")
+            # Total mis en valeur
+            y_total_box = max(y_table - 14, 60)
+            y_total_text = max(y_table - 2, 60)
+            c.setFillColorRGB(0.85, 0.85, 0.85)
+            c.rect(360, y_total_box, 200, 20, fill=1, stroke=0)
+            c.setFillColorRGB(0, 0, 0)
+            c.setFont("Helvetica-Bold", 11)
+            c.drawRightString(500, y_total_text, "TOTAL COMMANDE :")
+            c.drawRightString(550, y_total_text, f"{total:.2f} €")
 
             c.showPage()
 
