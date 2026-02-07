@@ -16,11 +16,54 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+
 import streamlit as st
-import traceback
 import pandas as pd
 import datetime as dt
 import importlib
+import os
+import shutil
+import hashlib
+import traceback
+from pathlib import Path
+def _purge_bytecode(root: Path) -> None:
+    """Supprime __pycache__ et *.pyc sous root (best-effort)."""
+    try:
+        for p in root.rglob('__pycache__'):
+            try:
+                shutil.rmtree(p, ignore_errors=True)
+            except Exception:
+                pass
+        for p in root.rglob('*.pyc'):
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _file_sha1(p: Path) -> str:
+    try:
+        h = hashlib.sha1()
+        h.update(p.read_bytes())
+        return h.hexdigest()
+    except Exception:
+        return '<unreadable>'
+
+
+def _show_file_context(p: Path, lineno: int, radius: int = 10) -> str:
+    try:
+        lines = p.read_text(encoding='utf-8', errors='ignore').splitlines()
+        start = max(1, lineno - radius)
+        end = min(len(lines), lineno + radius)
+        out = []
+        for i in range(start, end + 1):
+            prefix = '>>' if i == lineno else '  '
+            out.append(f"{prefix} {i:5d}: {lines[i-1]}")
+        return '\n'.join(out)
+    except Exception as e:
+        return f"<impossible de lire {p}: {e}>"
 
 
 # -----------------------------
@@ -36,6 +79,11 @@ def _purge_src_modules() -> None:
 def _import_or_stop():
     """Importe les modules src.* de façon robuste ; stop l'app si erreur."""
     try:
+        # Purge bytecode + caches import avant tout
+        sys.dont_write_bytecode = True
+        importlib.invalidate_caches()
+        _purge_bytecode(Path(__file__).resolve().parent)
+
         _purge_src_modules()
 
         # Import processor
@@ -57,6 +105,10 @@ def _import_or_stop():
         # Import order_forms
         order_forms = importlib.import_module("src.order_forms")
         importlib.reload(order_forms)
+
+        # Import bon_commande (BC)
+        bon_commande = importlib.import_module("src.bon_commande")
+        importlib.reload(bon_commande)
 
         # Import billing
         billing = importlib.import_module("src.billing")
@@ -85,16 +137,48 @@ def _import_or_stop():
         generator = importlib.import_module("src.allergens.generator")
         importlib.reload(generator)
 
-        return processor, cs, order_forms, billing, pdj_billing, pdj_facturation, learner, generator
+        return processor, cs, order_forms, billing, pdj_billing, pdj_facturation, learner, generator, bon_commande
 
     except Exception as e:
         st.error("💥 Erreur lors d’un import (module src.*)")
         st.code(repr(e))
         st.code(traceback.format_exc())
+
+        # --- Diagnostic: quel fichier est réellement exécuté ? ---
+        try:
+            tb = traceback.TracebackException.from_exception(e)
+            # Récupère le dernier frame utile
+            last = None
+            for fr in tb.stack:
+                last = fr
+            if last and last.filename:
+                fp = Path(last.filename)
+                st.info(f"Fichier en cause: {fp}\nSHA1: {_file_sha1(fp)}")
+                if last.lineno:
+                    st.code(_show_file_context(fp, int(last.lineno), radius=12))
+        except Exception:
+            pass
+
         st.stop()
 
 
-processor, cs, order_forms, billing, pdj_billing, pdj_facturation, learner, generator = _import_or_stop()
+processor, cs, order_forms, billing, pdj_billing, pdj_facturation, learner, generator, bon_commande = _import_or_stop()
+
+# --- Diagnostic version: affiche les chemins & hash des fichiers chargés ---
+try:
+    st.sidebar.markdown("### 🔎 Version chargée")
+    st.sidebar.caption(f"processor: `{getattr(processor, '__file__', '?')}`")
+    st.sidebar.caption(f"bon_commande: `{getattr(bon_commande, '__file__', '?')}`")
+    try:
+        _p = Path(getattr(bon_commande, '__file__', ''))
+        if _p.exists():
+            st.sidebar.caption(f"bon_commande SHA1: `{_file_sha1(_p)}`")
+            st.sidebar.caption(f"modifié le: `{dt.datetime.fromtimestamp(_p.stat().st_mtime)}`")
+    except Exception:
+        pass
+except Exception:
+    pass
+
 
 # Exports processor
 parse_planning_fabrication = processor.parse_planning_fabrication
@@ -102,7 +186,7 @@ parse_planning_mixe_lisse = processor.parse_planning_mixe_lisse
 make_production_summary = processor.make_production_summary
 make_production_pivot = processor.make_production_pivot
 parse_menu = processor.parse_menu
-build_bon_commande = processor.build_bon_commande
+build_bon_commande = bon_commande.build_bon_commande
 export_excel = processor.export_excel
 export_bons_livraison_pdf = processor.export_bons_livraison_pdf
 
@@ -483,7 +567,7 @@ try:
         with cbc2:
             st.markdown("**Bons par fournisseur (après édition du bon)**")
             st.caption(
-                "1) Télécharge le bon Excel, complète les colonnes Coefficient/Unité/Fournisseur/Libellé. "
+                "1) Télécharge le bon Excel, complète les colonnes Coefficient/Unité/Fournisseur/Prix cible unitaire (et ajuste Quantité si besoin). "
                 "2) Ré-uploade le fichier ici pour générer 1 bon par fournisseur."
             )
             bc_filled = st.file_uploader(
@@ -498,10 +582,63 @@ try:
                 out_xlsx = _temp_out_path(".xlsx")
                 out_pdf = _temp_out_path(".pdf")
 
+                # ✅ Nettoyage: on garde uniquement les colonnes utiles pour les bons fournisseurs
+                # Colonnes utiles pour les bons fournisseurs.
+                # On garde aussi les colonnes de calcul (prix/poids) si elles existent dans le fichier
+                # afin qu'elles puissent être affichées telles quelles (sinon elles seront recalculées).
+                cols_keep = [
+                    "Produit", "Libellé", "Unité", "Quantité",
+                    "Prix cible unitaire", "Prix cible total",
+                    "Poids unitaire (kg)", "Poids total (kg)",
+                    "Fournisseur",
+                ]
+                df_filled = df_filled[[c for c in cols_keep if c in df_filled.columns]].copy()
+
+                # Créneaux de livraison par fournisseur (JJ/MM/YYYY, séparés par des virgules)
+                suppliers_in_file = sorted(
+                    [
+                        s
+                        for s in df_filled.get("Fournisseur", pd.Series(dtype=str))
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                        .unique()
+                        .tolist()
+                        if s
+                    ]
+                )
+                delivery_dates_by_supplier = {}
+                if suppliers_in_file:
+                    st.markdown("**Créneaux de livraison par fournisseur (JJ/MM/YYYY)**")
+                    st.caption(
+                        "Tu peux préparer 2 créneaux (par défaut identiques pour tous les fournisseurs). "
+                        "Le split se fait d’abord sur le créneau 1 (jusqu’au seuil de poids), puis sur le créneau 2."
+                    )
+
+                    # Préremplissage global (modifiable)
+                    dcol1, dcol2 = st.columns(2)
+                    with dcol1:
+                        d1 = st.date_input("Créneau 1 (date)", value=dt.date.today(), key="global_slot_1")
+                    with dcol2:
+                        d2 = st.date_input("Créneau 2 (date)", value=dt.date.today() + dt.timedelta(days=1), key="global_slot_2")
+
+                    default_raw = f"{d1.strftime('%d/%m/%Y')}, {d2.strftime('%d/%m/%Y')}"
+
+                    for sup_name in suppliers_in_file:
+                        raw = st.text_input(
+                            f"{sup_name} — créneaux",
+                            value=default_raw,
+                            key=f"slots_{sup_name}",
+                        )
+                        slots = [x.strip() for x in str(raw).split(",") if x.strip()]
+                        delivery_dates_by_supplier[sup_name] = slots
+                else:
+                    st.info("Aucun fournisseur renseigné dans le bon de commande rempli.")
+
                 cbtn1, cbtn2 = st.columns(2)
                 with cbtn1:
                     if st.button("Générer Excel (1 feuille / fournisseur)", key="gen_sup_xlsx"):
-                        export_orders_per_supplier_excel(df_filled, out_xlsx, suppliers=suppliers2)
+                        export_orders_per_supplier_excel(df_filled, out_xlsx, suppliers=suppliers2, delivery_dates_by_supplier=delivery_dates_by_supplier, max_weight_kg=600.0)
                         with open(out_xlsx, "rb") as f:
                             st.download_button(
                                 "Télécharger Bons fournisseurs.xlsx",
@@ -511,7 +648,7 @@ try:
                             )
                 with cbtn2:
                     if st.button("Générer PDF (1 page / fournisseur)", key="gen_sup_pdf"):
-                        export_orders_per_supplier_pdf(df_filled, out_pdf, suppliers=suppliers2)
+                        export_orders_per_supplier_pdf(df_filled, out_pdf, suppliers=suppliers2, delivery_dates_by_supplier=delivery_dates_by_supplier, max_weight_kg=600.0)
                         with open(out_pdf, "rb") as f:
                             st.download_button(
                                 "Télécharger Bons fournisseurs.pdf",
