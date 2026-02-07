@@ -1,9 +1,6 @@
 """Génération du Bon de Commande (BC).
 
 ✅ Fichier À MODIFIER si tu veux changer la logique/mise en forme du bon de commande.
-
-L'app affiche dans la sidebar le chemin + hash SHA1 de ce fichier,
-pour être sûr que c'est bien CETTE version qui tourne.
 """
 
 from __future__ import annotations

@@ -403,41 +403,56 @@ def export_orders_per_supplier_pdf(
             else:
                 title = f"BON DE COMMANDE — {supplier_name}" + (f" (Lot {lot_idx}/{len(lots)})" if len(lots) > 1 else "")
 
+            # Marges / largeur page (A4 portrait: 595 x 842)
+            page_w = 595
+            left = 40
+            right = 40
+            usable_w = page_w - left - right
+
+            # Colonnes (un peu plus aérées)
+            x_prod = left
+            x_unit = left + 265
+            x_qty_r = left + 355
+            x_pu_r = left + 450
+            x_total_r = page_w - right
+
             def draw_page_header() -> float:
                 """Dessine l'en-tête + le header de tableau, et renvoie la position Y de départ des lignes."""
-                # Bandeau titre
+                # Bandeau titre (avec marges, pas en plein bord)
                 c.setFillColorRGB(0.18, 0.34, 0.59)
-                c.rect(0, 800, 595, 40, fill=1, stroke=0)
+                c.rect(left, 802, usable_w, 34, fill=1, stroke=0)
                 c.setFillColorRGB(1, 1, 1)
                 c.setFont("Helvetica-Bold", 15)
-                c.drawString(40, 812, title)
+                c.drawString(left, 812, title)
 
                 # Infos fournisseur
                 c.setFillColorRGB(0, 0, 0)
                 c.setFont("Helvetica", 9)
                 y_info = 785
                 if info.customer_code:
-                    c.drawString(40, y_info, f"Code client : {info.customer_code}")
+                    c.drawString(left, y_info, f"Code client : {info.customer_code}")
                     y_info -= 12
                 if info.coord1:
-                    c.drawString(40, y_info, info.coord1)
+                    c.drawString(left, y_info, info.coord1)
                     y_info -= 12
                 if info.coord2:
-                    c.drawString(40, y_info, info.coord2)
+                    c.drawString(left, y_info, info.coord2)
                     y_info -= 12
 
                 # Tableau
                 y_table = 740
-                # Bande grisée pour l'entête du tableau
+                # Bande grisée pour l'entête du tableau (avec marges cohérentes)
                 c.setFillColorRGB(0.9, 0.9, 0.9)
-                c.rect(35, y_table - 4, 530, 16, fill=1, stroke=0)
+                # Encadrement léger
+                c.setStrokeColorRGB(0.75, 0.75, 0.75)
+                c.rect(left, y_table - 5, usable_w, 18, fill=1, stroke=1)
                 c.setFillColorRGB(0, 0, 0)
                 c.setFont("Helvetica-Bold", 9)
-                c.drawString(40, y_table, "Produit")
-                c.drawString(270, y_table, "Unité")
-                c.drawRightString(330, y_table, "Quantité")
-                c.drawRightString(420, y_table, "PU €")
-                c.drawRightString(550, y_table, "Total €")
+                c.drawString(x_prod, y_table, "Produit")
+                c.drawString(x_unit, y_table, "Unité")
+                c.drawRightString(x_qty_r, y_table, "Quantité")
+                c.drawRightString(x_pu_r, y_table, "PU €")
+                c.drawRightString(x_total_r, y_table, "Total €")
                 return y_table - 14
 
             y_table = draw_page_header()
@@ -454,15 +469,15 @@ def export_orders_per_supplier_pdf(
                 # découpe simple produit sur 2 lignes si trop long
                 if len(prod) > 60:
                     p1, p2 = prod[:60], prod[60:120]
-                    c.drawString(40, y_table, p1); y_table -= 12
-                    c.drawString(40, y_table, p2)
+                    c.drawString(x_prod, y_table, p1); y_table -= 12
+                    c.drawString(x_prod, y_table, p2)
                 else:
-                    c.drawString(40, y_table, prod)
+                    c.drawString(x_prod, y_table, prod)
 
-                c.drawString(270, y_table, unit[:6])
-                c.drawRightString(330, y_table, f"{qty:g}")
-                c.drawRightString(420, y_table, f"{float(pu):.2f}" if str(pu).strip() != "" else "")
-                c.drawRightString(550, y_table, f"{pt:.2f}")
+                c.drawString(x_unit, y_table, unit[:8])
+                c.drawRightString(x_qty_r, y_table, f"{qty:g}")
+                c.drawRightString(x_pu_r, y_table, f"{float(pu):.2f}" if str(pu).strip() != "" else "")
+                c.drawRightString(x_total_r, y_table, f"{pt:.2f}")
 
                 y_table -= 12
                 if y_table < 80:
@@ -470,14 +485,19 @@ def export_orders_per_supplier_pdf(
                     y_table = draw_page_header()
 
             # Total mis en valeur
-            y_total_box = max(y_table - 14, 60)
-            y_total_text = max(y_table - 2, 60)
+            y_total_box = max(y_table - 18, 55)
             c.setFillColorRGB(0.85, 0.85, 0.85)
-            c.rect(360, y_total_box, 200, 20, fill=1, stroke=0)
+            # Encadré total aligné avec les marges + un peu plus de padding
+            total_box_w = 230
+            total_box_h = 22
+            total_box_x = (595 - right) - total_box_w
+            c.setStrokeColorRGB(0.75, 0.75, 0.75)
+            c.rect(total_box_x, y_total_box, total_box_w, total_box_h, fill=1, stroke=1)
             c.setFillColorRGB(0, 0, 0)
             c.setFont("Helvetica-Bold", 11)
-            c.drawRightString(500, y_total_text, "TOTAL COMMANDE :")
-            c.drawRightString(550, y_total_text, f"{total:.2f} €")
+            y_total_text = y_total_box + 7
+            c.drawRightString((595 - right) - 55, y_total_text, "TOTAL COMMANDE :")
+            c.drawRightString(595 - right, y_total_text, f"{total:.2f} €")
 
             c.showPage()
 

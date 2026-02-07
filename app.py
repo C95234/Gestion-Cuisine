@@ -143,41 +143,10 @@ def _import_or_stop():
         st.error("💥 Erreur lors d’un import (module src.*)")
         st.code(repr(e))
         st.code(traceback.format_exc())
-
-        # --- Diagnostic: quel fichier est réellement exécuté ? ---
-        try:
-            tb = traceback.TracebackException.from_exception(e)
-            # Récupère le dernier frame utile
-            last = None
-            for fr in tb.stack:
-                last = fr
-            if last and last.filename:
-                fp = Path(last.filename)
-                st.info(f"Fichier en cause: {fp}\nSHA1: {_file_sha1(fp)}")
-                if last.lineno:
-                    st.code(_show_file_context(fp, int(last.lineno), radius=12))
-        except Exception:
-            pass
-
         st.stop()
 
 
 processor, cs, order_forms, billing, pdj_billing, pdj_facturation, learner, generator, bon_commande = _import_or_stop()
-
-# --- Diagnostic version: affiche les chemins & hash des fichiers chargés ---
-try:
-    st.sidebar.markdown("### 🔎 Version chargée")
-    st.sidebar.caption(f"processor: `{getattr(processor, '__file__', '?')}`")
-    st.sidebar.caption(f"bon_commande: `{getattr(bon_commande, '__file__', '?')}`")
-    try:
-        _p = Path(getattr(bon_commande, '__file__', ''))
-        if _p.exists():
-            st.sidebar.caption(f"bon_commande SHA1: `{_file_sha1(_p)}`")
-            st.sidebar.caption(f"modifié le: `{dt.datetime.fromtimestamp(_p.stat().st_mtime)}`")
-    except Exception:
-        pass
-except Exception:
-    pass
 
 
 # Exports processor
