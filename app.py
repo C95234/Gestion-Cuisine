@@ -23,7 +23,6 @@ import datetime as dt
 import importlib
 import os
 import shutil
-import hashlib
 import traceback
 from pathlib import Path
 def _purge_bytecode(root: Path) -> None:
@@ -43,27 +42,6 @@ def _purge_bytecode(root: Path) -> None:
         pass
 
 
-def _file_sha1(p: Path) -> str:
-    try:
-        h = hashlib.sha1()
-        h.update(p.read_bytes())
-        return h.hexdigest()
-    except Exception:
-        return '<unreadable>'
-
-
-def _show_file_context(p: Path, lineno: int, radius: int = 10) -> str:
-    try:
-        lines = p.read_text(encoding='utf-8', errors='ignore').splitlines()
-        start = max(1, lineno - radius)
-        end = min(len(lines), lineno + radius)
-        out = []
-        for i in range(start, end + 1):
-            prefix = '>>' if i == lineno else '  '
-            out.append(f"{prefix} {i:5d}: {lines[i-1]}")
-        return '\n'.join(out)
-    except Exception as e:
-        return f"<impossible de lire {p}: {e}>"
 
 
 # -----------------------------
