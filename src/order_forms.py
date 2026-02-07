@@ -72,9 +72,10 @@ def group_lines_for_order(df: pd.DataFrame) -> pd.DataFrame:
 
     d["Quantité"] = pd.to_numeric(d.get("Quantité", 0), errors="coerce").fillna(0)
 
-    pu = pd.to_numeric(d.get("Prix cible unitaire", 0), errors="coerce").fillna(0)
+    pu = pd.to_numeric(d.get("Prix cible unitaire", pd.NA), errors="coerce")
     d["_pu"] = pu
-    d["_prix_total"] = d["Quantité"] * d["_pu"]
+    # Prix total uniquement si le PU est renseigné (sinon: vide)
+    d["_prix_total"] = (d["Quantité"] * d["_pu"]).where(d["_pu"].notna())
 
     # Poids logistique total (kg)
     # Règle attendue :
@@ -100,7 +101,7 @@ def group_lines_for_order(df: pd.DataFrame) -> pd.DataFrame:
         .agg(
             {
                 "Quantité": "sum",
-                "_prix_total": "sum",
+                "_prix_total": lambda s: s.sum(min_count=1),
                 "_poids_total": "sum",
                 "_pu": lambda s: s.dropna().unique().tolist(),
             }
@@ -110,16 +111,32 @@ def group_lines_for_order(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     def _one_or_blank(v):
-        try:
-            uniq = [float(x) for x in v if x not in (None, "") and float(x) != 0.0]
-        except Exception:
-            uniq = []
-        if len(uniq) == 1:
-            return uniq[0]
+        """Retourne le PU s’il est unique dans le groupe, sinon vide."""
+        uniq = []
+        for x in (v or []):
+            try:
+                fx = float(x)
+            except Exception:
+                continue
+            if pd.isna(fx) or fx == 0.0:
+                continue
+            uniq.append(fx)
+
+        # unique (stable)
+        seen = set()
+        uniq2 = []
+        for x in uniq:
+            if x not in seen:
+                seen.add(x)
+                uniq2.append(x)
+
+        if len(uniq2) == 1:
+            return uniq2[0]
         return ""
 
     grouped["Prix cible unitaire"] = grouped["_pu"].apply(_one_or_blank)
     grouped["Prix cible total"] = grouped["_prix_total"].round(2)
+    grouped["Prix cible total"] = grouped["Prix cible total"].where(grouped["Prix cible total"].notna(), "")
     grouped["Poids total (kg)"] = grouped["_poids_total"].round(3)
 
     grouped = grouped.drop(columns=["_pu", "_prix_total", "_poids_total"])
@@ -329,7 +346,9 @@ def export_orders_per_supplier_excel(
             ws.cell(total_row, 4, "TOTAL").font = header_font
             ws.cell(total_row, 4).alignment = body_align_right
             sum_cell = ws.cell(total_row, 5)
-            sum_cell.value = float(pd.to_numeric(lot_df["Prix cible total"], errors="coerce").fillna(0).sum())
+            s = pd.to_numeric(lot_df.get("Prix cible total", pd.Series(dtype=float)), errors="coerce")
+            sum_val = float(s.sum()) if s.notna().any() else None
+            sum_cell.value = sum_val
             sum_cell.number_format = money_fmt
             sum_cell.font = header_font
             for c in range(1, 6):
@@ -458,13 +477,20 @@ def export_orders_per_supplier_pdf(
             y_table = draw_page_header()
             c.setFont("Helvetica", 9)
             total = 0.0
+            has_price = False
             for _, r in lot_df.iterrows():
                 prod = str(r.get("Produit", "") or "")
                 unit = str(r.get("Unité", "") or "")
                 qty = float(r.get("Quantité", 0) or 0)
                 pu = r.get("Prix cible unitaire", "")
-                pt = float(r.get("Prix cible total", 0) or 0)
-                total += pt
+                pt_raw = r.get("Prix cible total", "")
+                pt_num = pd.to_numeric(pt_raw, errors="coerce")
+                if pd.notna(pt_num):
+                    pt = float(pt_num)
+                    total += pt
+                    has_price = True
+                else:
+                    pt = ""
 
                 # découpe simple produit sur 2 lignes si trop long
                 if len(prod) > 60:
@@ -477,7 +503,7 @@ def export_orders_per_supplier_pdf(
                 c.drawString(x_unit, y_table, unit[:8])
                 c.drawRightString(x_qty_r, y_table, f"{qty:g}")
                 c.drawRightString(x_pu_r, y_table, f"{float(pu):.2f}" if str(pu).strip() != "" else "")
-                c.drawRightString(x_total_r, y_table, f"{pt:.2f}")
+                c.drawRightString(x_total_r, y_table, f"{float(pt):.2f}" if str(pt).strip() != "" and pd.notna(pd.to_numeric(pt, errors="coerce")) else "")
 
                 y_table -= 12
                 if y_table < 80:
@@ -497,7 +523,7 @@ def export_orders_per_supplier_pdf(
             c.setFont("Helvetica-Bold", 11)
             y_total_text = y_total_box + 7
             c.drawRightString((595 - right) - 55, y_total_text, "TOTAL COMMANDE :")
-            c.drawRightString(595 - right, y_total_text, f"{total:.2f} €")
+            c.drawRightString(595 - right, y_total_text, f"{total:.2f} €" if has_price else "—")
 
             c.showPage()
 
