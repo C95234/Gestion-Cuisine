@@ -153,6 +153,62 @@ def _norm(s: str) -> str:
     return s
 
 
+def _find_sheet_name(sheetnames: list[str], wanted: str, aliases: Optional[list[str]] = None) -> Optional[str]:
+    """Find a worksheet name in a tolerant way.
+
+    Users sometimes rename Excel tabs (e.g. add week numbers or extra words), which can
+    break strict `sheet_name` checks. This helper tries to match the requested sheet using:
+    - exact match
+    - normalized match (case/accents/punctuation/extra spaces)
+    - token-subset match (e.g. wanted="planning fab" matches "Planning fab semaine 07")
+    - optional aliases
+    """
+    aliases = aliases or []
+
+    if not sheetnames:
+        return None
+
+    # 1) Exact
+    if wanted in sheetnames:
+        return wanted
+
+    wn = _norm(wanted)
+    wn_compact = wn.replace(" ", "")
+    wtoks = set(wn.split())
+
+    # 2) Normalized exact / compact
+    for name in sheetnames:
+        nn = _norm(name)
+        if nn == wn or nn.replace(" ", "") == wn_compact:
+            return name
+
+    # 3) Token subset
+    if wtoks:
+        for name in sheetnames:
+            ntoks = set(_norm(name).split())
+            if wtoks.issubset(ntoks):
+                return name
+
+    # 4) Aliases (same logic)
+    for alias in aliases:
+        if alias in sheetnames:
+            return alias
+        an = _norm(alias)
+        an_compact = an.replace(" ", "")
+        atoks = set(an.split())
+        for name in sheetnames:
+            nn = _norm(name)
+            if nn == an or nn.replace(" ", "") == an_compact:
+                return name
+        if atoks:
+            for name in sheetnames:
+                ntoks = set(_norm(name).split())
+                if atoks.issubset(ntoks):
+                    return name
+
+    return None
+
+
 def parse_planning_fabrication(path: str, sheet_name: str = "PLANNING FAB") -> Dict[str, pd.DataFrame]:
     """
     Planning fabrication -> {"dejeuner": df, "diner": df}
@@ -160,10 +216,15 @@ def parse_planning_fabrication(path: str, sheet_name: str = "PLANNING FAB") -> D
     """
     wb_val = openpyxl.load_workbook(path, data_only=True)   # valeurs figées
     wb_fx  = openpyxl.load_workbook(path, data_only=False)  # formules
-    if sheet_name not in wb_fx.sheetnames:
-        raise ValueError(f"Feuille '{sheet_name}' introuvable. Feuilles dispo: {wb_fx.sheetnames}")
-    ws_val = wb_val[sheet_name]
-    ws_fx  = wb_fx[sheet_name]
+    real_sheet = sheet_name
+    if real_sheet not in wb_fx.sheetnames:
+        real_sheet = _find_sheet_name(wb_fx.sheetnames, sheet_name, aliases=["PLANNING FABRICATION", "PLANNING FAB."])
+    if not real_sheet or real_sheet not in wb_fx.sheetnames:
+        raise ValueError(
+            f"Feuille '{sheet_name}' introuvable (même en recherche tolérante). Feuilles dispo: {wb_fx.sheetnames}"
+        )
+    ws_val = wb_val[real_sheet]
+    ws_fx  = wb_fx[real_sheet]
 
     targets = {_norm(d) for d in DAY_NAMES}
 
@@ -282,10 +343,16 @@ def parse_planning_fabrication(path: str, sheet_name: str = "PLANNING FAB") -> D
         v = ws_fx.cell(r, 1).value
         if isinstance(v, str):
             vv = v.upper()
-            if "PLANNING" in vv and "FABRICATION" in vv and "DEJEUN" in vv:
-                dejeuner_row = r
-            if "PLANNING" in vv and "FABRICATION" in vv and ("DINER" in vv or "DÎNER" in vv):
-                diner_row = r
+            if "PLANNING" in vv and "FABRICATION" in vv:
+                # Accept multiple variants used in the Excel files:
+                # - "DÉJEUNER" / "DEJEUN"
+                # - abbreviation "DEJ" (often in titles like "—  DEJ —")
+                # - "DÎNER" / "DINER"
+                # - abbreviation "DIN" (often in titles like "—  DIN —")
+                if ("DEJEUN" in vv) or re.search(r"\bDEJ\b", vv):
+                    dejeuner_row = r
+                if ("DINER" in vv) or ("DÎNER" in vv) or re.search(r"\bDIN\b", vv):
+                    diner_row = r
     if dejeuner_row is None or diner_row is None:
         raise ValueError("Impossible de localiser les sections DÉJEUNER / DÎNER (colonne A).")
 
@@ -391,11 +458,29 @@ def parse_planning_mixe_lisse(path: str, sheet_name: str = "Planning mixe lisse 
     """
     wb_val = openpyxl.load_workbook(path, data_only=True)
     wb_fx  = openpyxl.load_workbook(path, data_only=False)
-    if sheet_name not in wb_fx.sheetnames:
-        return {"dejeuner": pd.DataFrame(columns=["Site","Regime"] + DAY_NAMES),
-                "diner": pd.DataFrame(columns=["Site","Regime"] + DAY_NAMES)}
-    ws_val = wb_val[sheet_name]
-    ws_fx  = wb_fx[sheet_name]
+    real_sheet = sheet_name
+    if real_sheet not in wb_fx.sheetnames:
+        real_sheet = _find_sheet_name(
+            wb_fx.sheetnames,
+            sheet_name,
+            aliases=[
+                "PLANNING MIXE LISSE",
+                "PLANNING MIXE/LISSE",
+                "PLANNING MIXE",
+                "MIXE LISSE",
+                "MIXE/LISSE",
+            ],
+        )
+
+    if not real_sheet or real_sheet not in wb_fx.sheetnames:
+        # keep old behaviour: if sheet missing, just return empty frames
+        return {
+            "dejeuner": pd.DataFrame(columns=["Site", "Regime"] + DAY_NAMES),
+            "diner": pd.DataFrame(columns=["Site", "Regime"] + DAY_NAMES),
+        }
+
+    ws_val = wb_val[real_sheet]
+    ws_fx  = wb_fx[real_sheet]
 
     ref_re = re.compile(r"^(?:'([^']+)'|([^'!]+))!?\$?([A-Z]{1,3})\$?(\d{1,7})$")
     sheetref_re = re.compile(r"^=\s*\+?\s*(?:'([^']+)'\s*|([^'!]+))!?\$?([A-Z]{1,3})\$?(\d{1,7})\s*$")
