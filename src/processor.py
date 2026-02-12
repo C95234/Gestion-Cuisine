@@ -1653,8 +1653,67 @@ def export_excel(
 
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         bon_commande.to_excel(writer, sheet_name="Bon de commande", index=False)
-        dej_piv = prod_dej
-        din_piv = prod_din
+
+        # --- Feuilles PRODUCTION lisibles (matrice Régimes x Jours) ---
+        # On accepte soit un format "long" (Jour/Regime/Nb), soit déjà pivoté.
+        def _ensure_pivot(df: pd.DataFrame) -> pd.DataFrame:
+            if df is None or df.empty:
+                return pd.DataFrame(columns=["Regime", *DAY_NAMES, "Total"])
+            cols = [str(c) for c in df.columns]
+            # Déjà pivoté si on a toutes les colonnes jours
+            if all(j in cols for j in DAY_NAMES) and ("Regime" in cols or "Régime" in cols):
+                if "Régime" in df.columns and "Regime" not in df.columns:
+                    df = df.rename(columns={"Régime": "Regime"})
+                # S'assure de l'ordre des colonnes
+                base_cols = ["Regime", *DAY_NAMES]
+                if "Total" in df.columns:
+                    base_cols.append("Total")
+                else:
+                    df["Total"] = pd.to_numeric(df[DAY_NAMES].sum(axis=1), errors="coerce").fillna(0).astype(int)
+                    base_cols.append("Total")
+                return df[base_cols]
+
+            # Format long classique
+            df2 = df.copy()
+            # Harmonisation des noms de colonnes
+            rename_map = {}
+            for c in df2.columns:
+                cl = str(c).strip().lower()
+                if cl in ["jour", "jours", "jour(s)"]:
+                    rename_map[c] = "Jour"
+                elif cl in ["regime", "régime", "typologie"]:
+                    rename_map[c] = "Regime"
+                elif cl in ["nb", "nombre", "effectif", "quantite", "quantité"]:
+                    rename_map[c] = "Nb"
+            if rename_map:
+                df2 = df2.rename(columns=rename_map)
+            if not {"Jour", "Regime", "Nb"}.issubset(set(df2.columns)):
+                # Dernier recours : retourner tel quel pour ne pas casser
+                return df
+
+            df2["Regime"] = df2["Regime"].apply(normalize_regime_label)
+            df2["Nb"] = pd.to_numeric(df2["Nb"], errors="coerce").fillna(0).astype(int)
+
+            piv = (
+                df2.pivot_table(index="Regime", columns="Jour", values="Nb", aggfunc="sum", fill_value=0)
+                .reindex(columns=DAY_NAMES, fill_value=0)
+                .reset_index()
+            )
+            piv["Total"] = piv[DAY_NAMES].sum(axis=1).astype(int)
+
+            total_row = {"Regime": "TOTAL"}
+            for j in DAY_NAMES:
+                total_row[j] = int(piv[j].sum())
+            total_row["Total"] = int(piv["Total"].sum())
+            piv = pd.concat([piv, pd.DataFrame([total_row])], ignore_index=True)
+
+            for j in DAY_NAMES + ["Total"]:
+                piv[j] = pd.to_numeric(piv[j], errors="coerce").fillna(0).astype(int)
+            return piv
+
+        dej_piv = _ensure_pivot(prod_dej)
+        din_piv = _ensure_pivot(prod_din)
+
         dej_piv.to_excel(writer, sheet_name="Déjeuner", index=False)
         din_piv.to_excel(writer, sheet_name="Dîner", index=False)
 
