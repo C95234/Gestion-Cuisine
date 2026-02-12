@@ -1919,3 +1919,30 @@ def export_excel(
 
             ws.page_setup.fitToWidth = 1
             ws.page_setup.fitToHeight = 0
+
+
+# ==============================
+# EXPORT MATRICE PRODUCTION
+# Déjeuner / Dîner
+# ==============================
+
+import pandas as pd
+
+def generer_matrice_production(data, nom_onglet, writer):
+    df = pd.DataFrame(data)
+    if df.empty:
+        return
+
+    tableau = pd.pivot_table(
+        df,
+        values="quantite",
+        index="regime",
+        columns="jour",
+        aggfunc="sum",
+        fill_value=0
+    )
+
+    tableau["Total"] = tableau.sum(axis=1)
+    tableau.loc["TOTAL"] = tableau.sum()
+
+    tableau.to_excel(writer, sheet_name=nom_onglet)

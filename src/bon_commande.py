@@ -185,3 +185,27 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
 
 
 
+
+
+# ==============================
+# RÈGLE AJOUTÉE : VIANDE FRAÎCHE
+# Marqueur : coefficient == 0.15
+# Livraison = J-1
+# Couverture = 8 jours
+# ==============================
+
+from datetime import timedelta
+
+def est_viande_fraiche(ligne):
+    try:
+        coef = float(ligne.get("coefficient", 0))
+        return coef == 0.15
+    except:
+        return False
+
+def appliquer_regle_viande_si_applicable(ligne):
+    if est_viande_fraiche(ligne) and "dates_conso" in ligne:
+        date_premiere = min(ligne["dates_conso"])
+        ligne["date_livraison"] = date_premiere - timedelta(days=1)
+        ligne["couverture"] = 8
+    return ligne
