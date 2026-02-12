@@ -533,25 +533,13 @@ try:
                 # Colonnes utiles pour les bons fournisseurs.
                 # On garde aussi les colonnes de calcul (prix/poids) si elles existent dans le fichier
                 # afin qu'elles puissent être affichées telles quelles (sinon elles seront recalculées).
-                # NB: on conserve aussi les infos de consommation si elles existent (Jour(s)/Date/Typologie)
-                # afin de proposer des créneaux de livraison cohérents.
                 cols_keep = [
-                    "Jour(s)", "Jour", "Date", "Typologie",
                     "Produit", "Libellé", "Unité", "Quantité",
                     "Prix cible unitaire", "Prix cible total",
                     "Poids unitaire (kg)", "Poids total (kg)",
                     "Fournisseur",
                 ]
-                # Normalise les noms de colonnes (certains exports ajoutent des espaces invisibles)
-                df_filled.columns = [str(c).strip() for c in df_filled.columns]
-
                 df_filled = df_filled[[c for c in cols_keep if c in df_filled.columns]].copy()
-
-                # Normalise les valeurs fournisseur (sinon la détection + filtres peuvent échouer)
-                if "Fournisseur" in df_filled.columns:
-                    df_filled["Fournisseur"] = (
-                        df_filled["Fournisseur"].fillna("").astype(str).str.strip()
-                    )
 
                 # Créneaux de livraison par fournisseur (JJ/MM/YYYY, séparés par des virgules)
                 suppliers_in_file = sorted(
@@ -574,212 +562,20 @@ try:
                         "Le split se fait d’abord sur le créneau 1 (jusqu’au seuil de poids), puis sur le créneau 2."
                     )
 
-                    # --- Proposition automatique des créneaux, basée sur les jours de consommation ---
-                    # Règle demandée (PLATS UNIQUEMENT) :
-                    # - livraison autorisée entre J-8 et J-3 avant consommation.
-                    #   ("au maximum 8 jours avant" mais "au moins 3 jours avant".)
-                    # - autres typologies : pas de restriction (n'influencent pas la proposition)
-                    # IMPORTANT : dans le fichier Excel re-uploadé, il n'y a pas de colonne "Date".
-                    # Les valeurs de "Jour(s)" (Lundi, Mardi, ...) correspondent toujours à la SEMAINE SUIVANTE.
-                    def _typology_is_plat(typ: str) -> bool:
-                        t = (typ or "").strip().lower()
-                        # tolérance accents/variantes
-                        t = (
-                            t.replace("é", "e")
-                            .replace("è", "e")
-                            .replace("ê", "e")
-                            .replace("à", "a")
-                            .replace("ç", "c")
-                        )
-                        return ("plat" in t)
-
-                    def _coerce_date(v):
-                        if v is None or (isinstance(v, float) and pd.isna(v)):
-                            return None
-                        if isinstance(v, dt.datetime):
-                            return v.date()
-                        if isinstance(v, dt.date):
-                            return v
-                        s = str(v).strip()
-                        if not s:
-                            return None
-                        # formats courants
-                        for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%y"):
-                            try:
-                                return dt.datetime.strptime(s, fmt).date()
-                            except Exception:
-                                pass
-                        try:
-                            return pd.to_datetime(s, dayfirst=True, errors="coerce").date()
-                        except Exception:
-                            return None
-
-                    def _dates_from_jours_str(jours_raw: str, *, ref_date: dt.date):
-                        if not jours_raw:
-                            return []
-                        # "Jour(s)" correspond toujours à la semaine suivante.
-                        # On ancre donc sur le lundi de la semaine prochaine, quelle que soit la date du jour.
-                        # 0 = lundi ... 6 = dimanche
-                        days_until_next_monday = 7 - ref_date.weekday()
-                        base_monday = ref_date + dt.timedelta(days=days_until_next_monday)
-                        # Supporte : "Lundi", "Lundi, Mardi", "Lundi / Mardi", "Lundi Mardi", etc.
-                        raw = str(jours_raw)
-                        # remplace séparateurs usuels par des espaces
-                        for sep in [",", ";", "/", "\\n", "\\t", "-"]:
-                            raw = raw.replace(sep, " ")
-                        raw = " ".join(raw.split())
-                        if not raw:
-                            return []
-                        # extrait les jours présents dans la chaîne (ordre naturel)
-                        day_tokens = []
-                        raw_norm = (
-                            raw.lower()
-                            .replace("é", "e")
-                            .replace("è", "e")
-                            .replace("ê", "e")
-                            .replace("à", "a")
-                            .replace("ç", "c")
-                        )
-                        for dn in DAY_NAMES:
-                            dnl = (
-                                dn.lower()
-                                .replace("é", "e")
-                                .replace("è", "e")
-                                .replace("ê", "e")
-                                .replace("à", "a")
-                                .replace("ç", "c")
-                            )
-                            # match sur 3 premières lettres (lun, mar, ...)
-                            if dnl[:3] in raw_norm:
-                                day_tokens.append(dnl[:3])
-
-                        # fallback : split simple si on n'a rien trouvé
-                        if day_tokens:
-                            parts = day_tokens
-                        else:
-                            parts = [p.strip() for p in raw.split(" ") if p.strip()]
-                        out: list[dt.date] = []
-                        for p in parts:
-                            # normalise (sans accents) et prend le début du mot
-                            pl = (
-                                str(p).lower()
-                                .replace("é", "e")
-                                .replace("è", "e")
-                                .replace("ê", "e")
-                                .replace("à", "a")
-                                .replace("ç", "c")
-                            )
-                            idx = None
-                            for i, dn in enumerate(DAY_NAMES):
-                                dnl = (
-                                    dn.lower()
-                                    .replace("é", "e")
-                                    .replace("è", "e")
-                                    .replace("ê", "e")
-                                    .replace("à", "a")
-                                    .replace("ç", "c")
-                                )
-                                # accepte "lun", "lundi", etc.
-                                if pl.startswith(dnl[:3]):
-                                    idx = i
-                                    break
-                            if idx is None:
-                                continue
-                            out.append(base_monday + dt.timedelta(days=int(idx)))
-                        # unique + tri
-                        out = sorted(set(out))
-                        return out
-
-                    def _suggest_slots_for_df(df_sub: pd.DataFrame):
-                        today = dt.date.today()
-                        if df_sub is None or df_sub.empty:
-                            return today, today + dt.timedelta(days=1)
-
-                        # On ne tient compte que des lignes "Plat".
-                        # Pour un (ou plusieurs) jours de consommation C, une date de livraison D est valide si :
-                        #   C-8 <= D <= C-3
-                        # Pour une livraison unique qui couvre plusieurs consommations, on utilise l'intersection :
-                        #   D >= max(C-8)  et  D <= min(C-3)
-                        conso_dates_plats: list[dt.date] = []
-                        jours_col = 'Jour(s)' if 'Jour(s)' in df_sub.columns else ('Jour' if 'Jour' in df_sub.columns else None)
-                        for _, r in df_sub.iterrows():
-                            if not _typology_is_plat(str(r.get("Typologie", "") or "")):
-                                continue
-
-                            # Dates de consommation de la ligne
-                            conso_dates_row: list[dt.date] = []
-                            if "Date" in df_sub.columns:
-                                d = _coerce_date(r.get("Date"))
-                                if d:
-                                    conso_dates_row.append(d)
-                            if not conso_dates_row and jours_col is not None:
-                                conso_dates_row = _dates_from_jours_str(r.get(jours_col), ref_date=today)
-
-                            conso_dates_plats.extend(conso_dates_row)
-
-                        conso_dates_plats = sorted(set([d for d in conso_dates_plats if isinstance(d, dt.date)]))
-
-                        # S'il n'y a aucun "Plat" (ou aucune info jours), on retombe sur le comportement simple.
-                        if not conso_dates_plats:
-                            return today, today + dt.timedelta(days=1)
-
-                        c_min = min(conso_dates_plats)
-                        c_max = max(conso_dates_plats)
-                        lower = c_max - dt.timedelta(days=8)  # max(C-8)
-                        upper = c_min - dt.timedelta(days=3)  # min(C-3)
-
-                        # Si l'intersection est vide, on propose quand même une fourchette "raisonnable"
-                        # (premier plat et dernier plat) afin que l'utilisateur ajuste manuellement si besoin.
-                        if lower > upper:
-                            d1 = max(today, c_min - dt.timedelta(days=8))
-                            d2 = max(today, c_max - dt.timedelta(days=3))
-                            if d2 < d1:
-                                d2 = d1
-                            return d1, d2
-
-                        d1 = max(today, lower)
-                        d2 = max(today, upper)
-                        if d2 < d1:
-                            d2 = d1
-                        return d1, d2
-
-                    # Proposition globale (sur tout le fichier)
-                    suggested_g1, suggested_g2 = _suggest_slots_for_df(df_filled)
-
-                    # Streamlit mémorise les widgets via leur key : si tu changes de fichier,
-                    # les valeurs peuvent rester bloquées.
-                    # On crée donc une clé dépendante du fichier uploadé pour forcer un recalcul.
-                    import hashlib as _hashlib
-                    _raw = None
-                    try:
-                        _raw = bc_filled.getvalue()
-                    except Exception:
-                        _raw = (getattr(bc_filled, 'name', '') + str(getattr(bc_filled, 'size', ''))).encode('utf-8', errors='ignore')
-                    _sig = _hashlib.md5(_raw[:65536] if isinstance(_raw,(bytes,bytearray)) else bytes(str(_raw), 'utf-8')).hexdigest()[:8]
-                    key_prefix = f"bc_{_sig}"
-
-
                     # Préremplissage global (modifiable)
                     dcol1, dcol2 = st.columns(2)
                     with dcol1:
-                        d1 = st.date_input("Créneau 1 (date)", value=suggested_g1, key=f"{key_prefix}_global_slot_1")
+                        d1 = st.date_input("Créneau 1 (date)", value=dt.date.today(), key="global_slot_1")
                     with dcol2:
-                        d2 = st.date_input("Créneau 2 (date)", value=suggested_g2, key=f"{key_prefix}_global_slot_2")
+                        d2 = st.date_input("Créneau 2 (date)", value=dt.date.today() + dt.timedelta(days=1), key="global_slot_2")
 
                     default_raw = f"{d1.strftime('%d/%m/%Y')}, {d2.strftime('%d/%m/%Y')}"
 
                     for sup_name in suppliers_in_file:
-                        # Proposition par fournisseur (si on a des infos de consommation dans le fichier)
-                        try:
-                            df_sup = df_filled[df_filled.get("Fournisseur", "") == sup_name].copy()
-                        except Exception:
-                            df_sup = pd.DataFrame()
-                        sd1, sd2 = _suggest_slots_for_df(df_sup) if not df_sup.empty else (d1, d2)
-                        per_default = f"{sd1.strftime('%d/%m/%Y')}, {sd2.strftime('%d/%m/%Y')}"
                         raw = st.text_input(
                             f"{sup_name} — créneaux",
-                            value=per_default or default_raw,
-                            key=f"{key_prefix}_slots_{sup_name}",
+                            value=default_raw,
+                            key=f"slots_{sup_name}",
                         )
                         slots = [x.strip() for x in str(raw).split(",") if x.strip()]
                         delivery_dates_by_supplier[sup_name] = slots
