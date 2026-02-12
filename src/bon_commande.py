@@ -81,15 +81,17 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
         grouped = (
             menu_df.groupby(["Repas", "Typologie", "Produit_base", "Coefficient"], as_index=False)
             .agg(
-                {
-                    "Jour": lambda s: ", ".join(sorted(set(s), key=lambda x: DAY_NAMES.index(x))),
-                    "Produit": "first",
-                    "Effectif": "sum",
-                    "Quantité": "sum",
-                }
+                Jour_s=("Jour", lambda s: ", ".join(sorted(set(s), key=lambda x: DAY_NAMES.index(x)))),
+                Dates_conso=("Date", lambda s: ", ".join(sorted({d.strftime('%d/%m/%Y') for d in s if pd.notna(d)}))),
+                Date_conso_min=("Date", "min"),
+                Date_conso_max=("Date", "max"),
+                Produit=("Produit", "first"),
+                Effectif=("Effectif", "sum"),
+                Quantité=("Quantité", "sum"),
             )
-            .rename(columns={"Jour": "Jour(s)", "Produit_base": "Produit"})
+            .rename(columns={"Jour_s": "Jour(s)", "Produit_base": "Produit"})
         )
+
         grouped["Coefficient"] = "1"
         grouped["Unité"] = "unité"
         grouped["Fournisseur"] = ""
@@ -97,7 +99,7 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
         grouped["Prix cible total"] = ""
         grouped["Poids unitaire (kg)"] = ""
         grouped["Poids total (kg)"] = ""
-        return grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Effectif", "Coefficient", "Unité", "Fournisseur", "Quantité", "Prix cible unitaire", "Prix cible total", "Poids unitaire (kg)", "Poids total (kg)"]].sort_values(["Repas", "Typologie", "Produit"]).reset_index(drop=True)
+        return grouped[["Dates_conso", "Date_conso_min", "Date_conso_max", "Jour(s)", "Repas", "Typologie", "Produit", "Effectif", "Coefficient", "Unité", "Fournisseur", "Quantité", "Prix cible unitaire", "Prix cible total", "Poids unitaire (kg)", "Poids total (kg)"]].sort_values(["Repas", "Typologie", "Produit"]).reset_index(drop=True)
 
     planning_keys = counts[["Regime_planning", "reg_key_planning"]].drop_duplicates().to_dict("records")
 
@@ -161,14 +163,16 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
             as_index=False,
         )
         .agg(
-            {
-                "Jour": lambda s: ", ".join(sorted(set(s), key=lambda x: DAY_NAMES.index(x))),
-                "Effectif": "sum",
-                "Quantité": "sum",
-            }
+            Jour_s=("Jour", lambda s: ", ".join(sorted(set(s), key=lambda x: DAY_NAMES.index(x)))),
+            Dates_conso=("Date", lambda s: ", ".join(sorted({d.strftime('%d/%m/%Y') for d in s if pd.notna(d)}))),
+            Date_conso_min=("Date", "min"),
+            Date_conso_max=("Date", "max"),
+            Effectif=("Effectif", "sum"),
+            Quantité=("Quantité", "sum"),
         )
-        .rename(columns={"Jour": "Jour(s)", "Produit_base": "Produit"})
+        .rename(columns={"Jour_s": "Jour(s)", "Produit_base": "Produit"})
     )
+
 
     if "Unité" not in grouped.columns:
         grouped["Unité"] = "unité"
@@ -180,7 +184,7 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
     grouped["Poids unitaire (kg)"] = ""
     grouped["Poids total (kg)"] = ""
 
-    grouped = grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Effectif", "Coefficient", "Unité", "Fournisseur", "Quantité", "Prix cible unitaire", "Prix cible total", "Poids unitaire (kg)", "Poids total (kg)"]]
+    grouped = grouped[["Dates_conso", "Date_conso_min", "Date_conso_max", "Jour(s)", "Repas", "Typologie", "Produit", "Effectif", "Coefficient", "Unité", "Fournisseur", "Quantité", "Prix cible unitaire", "Prix cible total", "Poids unitaire (kg)", "Poids total (kg)"]]
     return grouped.sort_values(["Repas", "Typologie", "Produit"]).reset_index(drop=True)
 
 
