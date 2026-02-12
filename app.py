@@ -567,9 +567,10 @@ try:
 
                     # --- Proposition automatique des créneaux, basée sur les jours de consommation ---
                     # Règles demandées :
-                    # - Plats : pas de créneau à plus de 8 jours d'avance
-                    # - Entrées : pas de créneau à plus de 3 jours d'avance
-                    # - Laitages & Desserts : pas de restriction
+                    # - Plats : proposer un créneau au plus tard à J-8 (date_conso - 8 jours)
+                    # - Autres typologies : pas de restriction (n'influencent pas la proposition)
+                    # IMPORTANT : dans le fichier Excel re-uploadé, il n'y a pas de colonne "Date".
+                    # Les valeurs de "Jour(s)" (Lundi, Mardi, ...) correspondent toujours à la SEMAINE SUIVANTE.
                     def _typology_window_days(typ: str):
                         t = (typ or "").strip().lower()
                         # tolérance accents/variantes
@@ -580,13 +581,8 @@ try:
                             .replace("à", "a")
                             .replace("ç", "c")
                         )
-                        if "entree" in t or t.startswith("ent"):
-                            return 3
                         if "plat" in t:
                             return 8
-                        # pas de restriction
-                        if "lait" in t or "dessert" in t:
-                            return None
                         return None
 
                     def _coerce_date(v):
@@ -610,21 +606,14 @@ try:
                         except Exception:
                             return None
 
-                    def _next_week_monday(from_date: dt.date) -> dt.date:
-                        """Retourne le lundi de la semaine suivante (ISO), quel que soit le jour courant."""
-                        # weekday: 0=lundi ... 6=dimanche
-                        days_until_next_monday = (7 - from_date.weekday()) % 7
-                        # si on est déjà lundi, on veut bien le lundi *suivant* => +7
-                        if days_until_next_monday == 0:
-                            days_until_next_monday = 7
-                        return from_date + dt.timedelta(days=days_until_next_monday)
-
                     def _dates_from_jours_str(jours_raw: str, *, ref_date: dt.date):
                         if not jours_raw:
                             return []
-                        # IMPORTANT : dans ce logiciel, "Lundi/Mardi..." correspond toujours à la SEMAINE SUIVANTE.
-                        # On ancre donc le calcul sur le lundi de la semaine prochaine.
-                        week_monday = _next_week_monday(ref_date)
+                        # "Jour(s)" correspond toujours à la semaine suivante.
+                        # On ancre donc sur le lundi de la semaine prochaine, quelle que soit la date du jour.
+                        # 0 = lundi ... 6 = dimanche
+                        days_until_next_monday = 7 - ref_date.weekday()
+                        base_monday = ref_date + dt.timedelta(days=days_until_next_monday)
                         parts = [p.strip() for p in str(jours_raw).split(",") if p.strip()]
                         out: list[dt.date] = []
                         for p in parts:
@@ -652,7 +641,7 @@ try:
                                     break
                             if idx is None:
                                 continue
-                            out.append(week_monday + dt.timedelta(days=idx))
+                            out.append(base_monday + dt.timedelta(days=int(idx)))
                         # unique + tri
                         out = sorted(set(out))
                         return out
