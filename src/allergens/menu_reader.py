@@ -135,7 +135,8 @@ def _find_header_row_and_cols(ws: Worksheet) -> tuple[int, dict[str, int]]:
             best_cols = cols
 
     if best_row is None:
-        raise ValueError("Impossible de trouver l'en-tête des colonnes de régimes.")
+        print("⚠ Aucun régime détecté - fonctionnement en mode vide.")
+        return {}
 
     return best_row, best_cols
 
