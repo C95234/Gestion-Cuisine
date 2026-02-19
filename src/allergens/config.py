@@ -4,10 +4,13 @@
 
 # --- Constantes régimes (compatibilité interne obligatoire) ---
 REG_STANDARD = "standard"
-REG_VEGETARIAN = "vegetarian"
+
+REG_VEGETARIEN = "vegetarien"
+REG_VEGETARIAN = REG_VEGETARIEN
+
 REG_VEGAN = "vegan"
 
-# --- Colonnes allergènes (alcool supprimé proprement) ---
+# --- Colonnes allergènes ---
 ALLERGEN_COLUMNS = [
     "gluten",
     "lait",
@@ -31,3 +34,4 @@ def normalize(value):
 
 def is_known_allergen(name):
     return normalize(name) in [normalize(a) for a in ALLERGEN_COLUMNS]
+
