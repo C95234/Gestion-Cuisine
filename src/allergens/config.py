@@ -1,20 +1,38 @@
-# =========================
+
+ # =========================
 # CONFIGURATION ALLERGENES
 # =========================
 
-# --- Constantes régimes (compatibilité totale) ---
+# =========================
+# CONSTANTES REGIMES
+# (compatibilité complète projet)
+# =========================
 
 REG_STANDARD = "standard"
 
-# Variantes végétarien
+# Végétarien
 REG_VEGETARIEN = "vegetarien"
 REG_VEGETARIAN = REG_VEGETARIEN
 
-# Variantes végétalien / vegan
+# Végétalien / Vegan
 REG_VEGETALIEN = "vegetalien"
 REG_VEGAN = REG_VEGETALIEN
 
-# --- Colonnes allergènes ---
+# Hypocalorique / Hypo
+REG_HYPO = "hypo"
+REG_HYPOCALORIQUE = REG_HYPO
+
+# Sans lactose
+REG_SANS_LACTOSE = "sans_lactose"
+REG_LACTOSE_FREE = REG_SANS_LACTOSE
+
+# Sécurité générique (si d'autres imports existent)
+REG_AUTRE = "autre"
+
+# =========================
+# ALLERGENES
+# =========================
+
 ALLERGEN_COLUMNS = [
     "gluten",
     "lait",
@@ -38,4 +56,3 @@ def normalize(value):
 
 def is_known_allergen(name):
     return normalize(name) in [normalize(a) for a in ALLERGEN_COLUMNS]
-
