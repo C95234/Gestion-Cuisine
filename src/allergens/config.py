@@ -1,58 +1,45 @@
+from __future__ import annotations
 
- # =========================
-# CONFIGURATION ALLERGENES
-# =========================
+# Régimes (libellés visibles dans les templates)
+REG_STANDARD = "Standards"
+REG_VEGETARIEN = "Végétariens"
+REG_VEGETALIEN = "Végétaliens"
+REG_HYPO = "Hypocaloriques "
 
-# =========================
-# CONSTANTES REGIMES
-# (compatibilité complète projet)
-# =========================
+# Pour compatibilité avec ton parseur de menus existant :
+# - "Sans lactose" correspond à la colonne "sans lactose"
+# - "Spéciaux" correspond à la colonne "avec lactose" (ou régimes spéciaux)
+REG_SPEC_SANS = "Sans lactose"
+REG_SPEC_AVEC = "Spéciaux"
 
-REG_STANDARD = "standard"
-
-# Végétarien
-REG_VEGETARIEN = "vegetarien"
-REG_VEGETARIAN = REG_VEGETARIEN
-
-# Végétalien / Vegan
-REG_VEGETALIEN = "vegetalien"
-REG_VEGAN = REG_VEGETALIEN
-
-# Hypocalorique / Hypo
-REG_HYPO = "hypo"
-REG_HYPOCALORIQUE = REG_HYPO
-
-# Sans lactose
-REG_SANS_LACTOSE = "sans_lactose"
-REG_LACTOSE_FREE = REG_SANS_LACTOSE
-
-# Sécurité générique (si d'autres imports existent)
-REG_AUTRE = "autre"
-
-# =========================
-# ALLERGENES
-# =========================
-
-ALLERGEN_COLUMNS = [
-    "gluten",
-    "lait",
-    "oeuf",
-    "arachide",
-    "soja",
-    "fruit à coque",
-    "moutarde",
-    "céleri",
-    "sésame",
-    "sulfites",
-    "poisson",
-    "crustacé",
-    "mollusque"
+REGIMES_ORDER = [
+    REG_STANDARD,
+    REG_VEGETARIEN,
+    REG_HYPO,
+    REG_VEGETALIEN,
+    REG_SPEC_SANS,
+    REG_SPEC_AVEC,
 ]
 
-def normalize(value):
-    if not isinstance(value, str):
-        return ""
-    return value.strip().lower()
+SERVICE_DEJ = "Déjeuner"
+SERVICE_DIN = "Diner"
 
-def is_known_allergen(name):
-    return normalize(name) in [normalize(a) for a in ALLERGEN_COLUMNS]
+# Colonnes allergènes (doivent correspondre aux en-têtes du template)
+ALLERGEN_COLUMNS = [
+    "Céréales/gluten",
+    "Crustacés",
+    "Mollusques",
+    "Poisson",
+    "Œuf",
+    "Arachide",
+    "Soja",
+    "Lactose",
+    "Fruit à coques",
+    "Céleri",
+    "Moutarde",
+    "Sésame",
+    "Lupin",
+    "G6PD*",
+    "alcool dans sauce",
+    "Sulfites",
+]
