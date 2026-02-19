@@ -2,11 +2,17 @@
 # CONFIGURATION ALLERGENES
 # =========================
 
-# --- Constantes régimes ---
+# --- Constantes régimes (compatibilité totale) ---
+
 REG_STANDARD = "standard"
+
+# Variantes végétarien
 REG_VEGETARIEN = "vegetarien"
 REG_VEGETARIAN = REG_VEGETARIEN
-REG_VEGAN = "vegan"
+
+# Variantes végétalien / vegan
+REG_VEGETALIEN = "vegetalien"
+REG_VEGAN = REG_VEGETALIEN
 
 # --- Colonnes allergènes ---
 ALLERGEN_COLUMNS = [
@@ -32,3 +38,4 @@ def normalize(value):
 
 def is_known_allergen(name):
     return normalize(name) in [normalize(a) for a in ALLERGEN_COLUMNS]
+
