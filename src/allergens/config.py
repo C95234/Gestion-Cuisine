@@ -40,6 +40,6 @@ ALLERGEN_COLUMNS = [
     "Sésame",
     "Lupin",
     "G6PD*",
-    dans sauce",
+    "alcool dans sauce",
     "Sulfites",
 ]

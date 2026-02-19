@@ -101,6 +101,10 @@ def _find_header_row_and_cols(ws: Worksheet) -> tuple[int, dict[str, int]]:
             row_vals.append(v)
 
         joined = " ".join(v for v in row_vals if v)
+
+        if "viande" not in joined or "vegetar" not in joined:
+            continue
+
         cols = {}
         for c, v in enumerate(row_vals, start=1):
             if not v:
@@ -119,7 +123,9 @@ def _find_header_row_and_cols(ws: Worksheet) -> tuple[int, dict[str, int]]:
                     continue
                 if any(norm(h) in v for h in hints):
                     cols.setdefault(reg, c)
-        if not cols:
+
+        required = {REG_STANDARD, REG_VEGETARIEN, REG_VEGETALIEN}
+        if not required.issubset(cols):
             continue
 
         score = len(cols)
@@ -129,9 +135,7 @@ def _find_header_row_and_cols(ws: Worksheet) -> tuple[int, dict[str, int]]:
             best_cols = cols
 
     if best_row is None:
-        # Aucun régime détecté : on renvoie un mapping vide pour éviter tout crash.
-        # Le reste du pipeline (template_filler) sait gérer des menus vides.
-        return 1, {}
+        raise ValueError("Impossible de trouver l'en-tête des colonnes de régimes.")
 
     return best_row, best_cols
 
