@@ -19,7 +19,14 @@ def load_data():
     try:
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+
+                # 🔥 Supprime automatiquement la clé "alcool"
+                if "sauces" in data:
+                    for sauce in data["sauces"]:
+                        sauce.pop("alcool", None)
+
+                return data
     except Exception:
         pass
     return {}
