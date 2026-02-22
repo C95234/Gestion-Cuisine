@@ -15,24 +15,6 @@ def load_data():
             return json.load(f)
     return {}
 
-"""Streamlit entrypoint.
-
-Streamlit Cloud peut exécuter l'app avec un répertoire de travail différent du
-répertoire du projet. Pour rendre les imports `import src.*` fiables, on force
-le dossier contenant ce fichier dans `sys.path`.
-
-⚠️ Important Streamlit: après un crash d'import, Streamlit peut garder un module
-partiellement importé en cache. On purge donc sys.modules pour `src.*`.
-"""
-
-from pathlib import Path
-import sys
-
-# ✅ Assure que le dossier racine du projet est bien dans sys.path
-ROOT = Path(__file__).resolve().parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 
 import streamlit as st
 import pandas as pd
