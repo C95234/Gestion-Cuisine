@@ -705,6 +705,26 @@ try:
                     # les valeurs peuvent rester bloquées.
                     # On crée donc une clé dépendante du fichier uploadé pour forcer un recalcul.
                     import hashlib as _hashlib
+
+import json
+import os
+
+DATA_FILE = "data.json"
+
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f)
+
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+if "persistent_data" not in st.session_state:
+    st.session_state.persistent_data = load_data()
+
                     _raw = None
                     try:
                         _raw = bc_filled.getvalue()
@@ -1341,3 +1361,10 @@ try:
 except Exception:
     st.error("Une erreur est survenue pendant le calcul.")
     st.code(traceback.format_exc())
+
+
+# --- Auto-save persistent data ---
+try:
+    save_data(st.session_state.get("persistent_data", {}))
+except Exception:
+    pass
