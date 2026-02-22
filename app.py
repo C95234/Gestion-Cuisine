@@ -1,3 +1,20 @@
+
+# --- Persistence Layer Added ---
+import json
+import os
+
+DATA_FILE = "data.json"
+
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f)
+
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
 """Streamlit entrypoint.
 
 Streamlit Cloud peut exécuter l'app avec un répertoire de travail différent du
@@ -1341,3 +1358,8 @@ try:
 except Exception:
     st.error("Une erreur est survenue pendant le calcul.")
     st.code(traceback.format_exc())
+
+
+# --- Auto-save persistent data (safe) ---
+if "persistent_data" in st.session_state:
+    save_data(st.session_state["persistent_data"])
