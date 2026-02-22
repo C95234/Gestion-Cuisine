@@ -1,22 +1,29 @@
-
-# --- Persistence Layer Added ---
+# --- Persistence Layer (stable Streamlit Cloud) ---
+import sys
 import json
 import os
+import streamlit as st
 
-DATA_FILE = "data.json"
+# Toujours enregistrer le fichier au même endroit que app.py
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(BASE_DIR, "data.json")
 
 def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f)
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass  # évite tout affichage d'erreur Streamlit
 
 def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
+    try:
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
     return {}
 
-
-import streamlit as st
 import pandas as pd
 import datetime as dt
 import importlib
