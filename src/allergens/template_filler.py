@@ -73,10 +73,17 @@ def copy_sheet(src_ws: Worksheet, dst_wb: Workbook, title: str) -> Worksheet:
     return dst_ws
 
 
+from openpyxl.cell.cell import MergedCell
+
 def _clear_values_only(ws: Worksheet, cell_range: str) -> None:
     for row in ws[cell_range]:
         for cell in row:
-            cell.value = None
+            if isinstance(cell, MergedCell):
+                continue
+            try:
+                cell.value = None
+            except Exception:
+                pass
 
 
 def _set_service_title(ws: Worksheet, service: str, day: date) -> None:
