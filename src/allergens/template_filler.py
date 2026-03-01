@@ -11,7 +11,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from .config import (
     SERVICE_DEJ, SERVICE_DIN,
-    REG_STANDARD, REG_VEGETARIEN, REG_HYPO, REG_SPEC_SANS, REG_SPEC_AVEC,
+    REG_STANDARD, REG_VEGETARIEN, REG_VEGETALIEN, REG_HYPO, REG_SPEC_SANS, REG_SPEC_AVEC,
     ALLERGEN_COLUMNS
 )
 from .utils import normalize_space, normalize_key
@@ -21,8 +21,9 @@ REGIME_START_ROW = {
     REG_STANDARD: 4,
     REG_VEGETARIEN: 8,
     REG_HYPO: 12,
+    REG_VEGETALIEN: 16,
     REG_SPEC_SANS: 20,   # Sans lactose
-    REG_SPEC_AVEC: 24,   # Spéciaux avec lactose
+    REG_SPEC_AVEC: 24,   # Spéciaux
 }
 COURSE_ROW_OFFSETS = {"entree": 0, "plat": 1, "fromage": 2, "dessert": 3}
 

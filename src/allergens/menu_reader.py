@@ -11,7 +11,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from .utils import normalize_space, strip_asterisks
 from .config import (
-    REG_STANDARD, REG_VEGETARIEN,
+    REG_STANDARD, REG_VEGETARIEN, REG_VEGETALIEN,
     REG_HYPO, REG_SPEC_AVEC, REG_SPEC_SANS,
     SERVICE_DEJ, SERVICE_DIN
 )
@@ -23,6 +23,7 @@ from .config import (
 HEADER_HINTS = {
     REG_STANDARD: ["viande/poisson/œuf", "viande/poisson/oeuf", "viande", "poisson", "oeuf"],
     REG_VEGETARIEN: ["végétarien", "vegetarien"],
+    REG_VEGETALIEN: ["végétalien", "vegetalien"],
     REG_HYPO: ["hypocalorique"],
     REG_SPEC_AVEC: ["avec lactose"],
     REG_SPEC_SANS: ["sans lactose"],
@@ -123,9 +124,7 @@ def _find_header_row_and_cols(ws: Worksheet) -> tuple[int, dict[str, int]]:
                 if any(norm(h) in v for h in hints):
                     cols.setdefault(reg, c)
 
-        # La diététicienne a supprimé les menus végétaliens : on ne les exige plus
-        # (et on les ignore même si la colonne existe dans le planning).
-        required = {REG_STANDARD, REG_VEGETARIEN}
+        required = {REG_STANDARD, REG_VEGETARIEN, REG_VEGETALIEN}
         if not required.issubset(cols):
             continue
 
@@ -213,7 +212,7 @@ def _looks_like_entree(s: str) -> bool:
 # CONSTRUCTION D'UN SERVICE
 # ============================================================
 
-def _build_service_positional(rows: list[str], service: str) -> dict[str, str]:
+def _build_service_positional(rows: list[str], service: str, is_vegan: bool) -> dict[str, str]:
     out = {"entree": "—", "plat": "—", "garnitures": "—", "fromage": "—", "dessert": "—"}
 
     for x in rows:
@@ -300,10 +299,9 @@ def read_menus(excel_path: str) -> dict[date, dict[str, dict[str, dict[str, str]
                 if _clean_cell(_merged_value(ws, r, col))
             ]
 
-            # Menus végétaliens supprimés : même si la colonne existe, elle sera ignorée plus bas.
             day_menu[reg] = {
-                SERVICE_DEJ: _build_service_positional(cells_dej, SERVICE_DEJ),
-                SERVICE_DIN: _build_service_positional(cells_din, SERVICE_DIN),
+                SERVICE_DEJ: _build_service_positional(cells_dej, SERVICE_DEJ, reg == REG_VEGETALIEN),
+                SERVICE_DIN: _build_service_positional(cells_din, SERVICE_DIN, reg == REG_VEGETALIEN),
             }
 
         menus[d] = day_menu
