@@ -1266,7 +1266,7 @@ try:
             "L'apprentissage sert uniquement à **préremplir les croix (X)** à partir des classeurs de semaines précédentes."
         )
 
-                from pathlib import Path
+                
 
         BASE_DIR = Path(__file__).resolve().parent
 
