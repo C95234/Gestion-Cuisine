@@ -1266,8 +1266,25 @@ try:
             "L'apprentissage sert uniquement à **préremplir les croix (X)** à partir des classeurs de semaines précédentes."
         )
 
-        base_dir = Path(__file__).parent
-        template_dir = base_dir / "templates" / "allergen"
+                
+
+        BASE_DIR = Path(__file__).resolve().parent
+
+        possible_dirs = [
+            BASE_DIR / "templates" / "allergen",
+            BASE_DIR.parent / "templates" / "allergen",
+            BASE_DIR / "gestion-cuisine" / "templates" / "allergen",
+        ]
+
+        template_dir = None
+        for p in possible_dirs:
+            if p.exists():
+                template_dir = p
+                break
+
+        if template_dir is None:
+            template_dir = BASE_DIR / "templates" / "allergen"
+
 
         c1, c2 = st.columns([2, 1])
         with c1:
