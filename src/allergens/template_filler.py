@@ -11,7 +11,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from .config import (
     SERVICE_DEJ, SERVICE_DIN,
-    REG_STANDARD, REG_VEGETARIEN, REG_VEGETALIEN, REG_HYPO, REG_SPEC_SANS, REG_SPEC_AVEC,
+    REG_STANDARD, REG_VEGETARIEN, REG_HYPO, REG_SPEC_SANS, REG_SPEC_AVEC,
     ALLERGEN_COLUMNS
 )
 from .utils import normalize_space, normalize_key
@@ -21,17 +21,16 @@ REGIME_START_ROW = {
     REG_STANDARD: 4,
     REG_VEGETARIEN: 8,
     REG_HYPO: 12,
-    REG_VEGETALIEN: 16,
-    REG_SPEC_SANS: 20,   # Sans lactose
-    REG_SPEC_AVEC: 24,   # Spéciaux
+    REG_SPEC_SANS: 16,
+    REG_SPEC_AVEC: 20,
 }
 COURSE_ROW_OFFSETS = {"entree": 0, "plat": 1, "fromage": 2, "dessert": 3}
 
 # Dans le template, les allergènes sont en colonnes C -> R dans l'ordre ALLERGEN_COLUMNS
-ALLERGEN_LETTERS = list("CDEFGHIJKLMNOPQR")
+ALLERGEN_LETTERS = list("CDEFGHIJKLMNOPQ")
 ALLERGEN_COLS = {ALLERGEN_COLUMNS[i]: ALLERGEN_LETTERS[i] for i in range(len(ALLERGEN_COLUMNS))}
 
-MEAT_ENTRY_ROWS = [33, 35, 37]  # B33, B35, B37 (chacun sur 2 lignes fusionnées)
+MEAT_ENTRY_ROWS = [29, 31, 33]  # B33, B35, B37 (chacun sur 2 lignes fusionnées)
 
 def copy_sheet(src_ws: Worksheet, dst_wb: Workbook, title: str) -> Worksheet:
     """Copie une feuille avec styles/dimensions/merges (format EXACT conservé)."""
@@ -159,7 +158,7 @@ def fill_allergen_workbook(
     out_path: str,
 ) -> Tuple[str, List[str]]:
     """Génère un classeur Excel au format EXACT du template, 1 feuille par service."""
-    template_path = os.path.join(template_dir, "template_dejeuner.xlsx")
+    template_path = os.path.join(template_dir, "template_allergen.xlsx")
     wb_tpl = load_workbook(template_path)
     ws_tpl = wb_tpl.active
 

@@ -11,7 +11,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from .utils import normalize_space, strip_asterisks
 from .config import (
-    REG_STANDARD, REG_VEGETARIEN, REG_VEGETALIEN,
+    REG_STANDARD, REG_VEGETARIEN,
     REG_HYPO, REG_SPEC_AVEC, REG_SPEC_SANS,
     SERVICE_DEJ, SERVICE_DIN
 )
@@ -22,9 +22,7 @@ from .config import (
 
 HEADER_HINTS = {
     REG_STANDARD: ["viande/poisson/œuf", "viande/poisson/oeuf", "viande", "poisson", "oeuf"],
-    REG_VEGETARIEN: ["végétarien", "vegetarien"],
-    REG_VEGETALIEN: ["végétalien", "vegetalien"],
-    REG_HYPO: ["hypocalorique"],
+    REG_VEGETARIEN: ["végétarien", "vegetarien"],    REG_HYPO: ["hypocalorique"],
     REG_SPEC_AVEC: ["avec lactose"],
     REG_SPEC_SANS: ["sans lactose"],
 }
@@ -124,7 +122,7 @@ def _find_header_row_and_cols(ws: Worksheet) -> tuple[int, dict[str, int]]:
                 if any(norm(h) in v for h in hints):
                     cols.setdefault(reg, c)
 
-        required = {REG_STANDARD, REG_VEGETARIEN, REG_VEGETALIEN}
+        required = {REG_STANDARD, REG_VEGETARIEN}
         if not required.issubset(cols):
             continue
 
@@ -135,8 +133,7 @@ def _find_header_row_and_cols(ws: Worksheet) -> tuple[int, dict[str, int]]:
             best_cols = cols
 
     if best_row is None:
-        print("⚠ Aucun régime détecté - fonctionnement en mode vide.")
-        return {}
+        raise ValueError("Impossible de détecter les colonnes de régimes dans le menu (format non reconnu).")
 
     return best_row, best_cols
 
@@ -300,8 +297,8 @@ def read_menus(excel_path: str) -> dict[date, dict[str, dict[str, dict[str, str]
             ]
 
             day_menu[reg] = {
-                SERVICE_DEJ: _build_service_positional(cells_dej, SERVICE_DEJ, reg == REG_VEGETALIEN),
-                SERVICE_DIN: _build_service_positional(cells_din, SERVICE_DIN, reg == REG_VEGETALIEN),
+                SERVICE_DEJ: _build_service_positional(cells_dej, SERVICE_DEJ, False),
+                SERVICE_DIN: _build_service_positional(cells_din, SERVICE_DIN, False),
             }
 
         menus[d] = day_menu
