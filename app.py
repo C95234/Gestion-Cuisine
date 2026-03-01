@@ -1311,7 +1311,7 @@ try:
 
         with c2:
             st.markdown("### Templates allergènes")
-            if (template_dir / "template_dejeuner.xlsx").exists():
+            if (template_dir / "template_allergen.xlsx").exists():
                 st.success("Templates présents")
             else:
                 st.error("Templates allergènes manquants (templates/allergen).")
@@ -1320,7 +1320,7 @@ try:
         st.divider()
         st.markdown("### 2) Générer les tableaux allergènes")
         if st.button("📄 Générer tableaux allergènes (Excel)", type="primary"):
-            if not (template_dir / "template_dejeuner.xlsx").exists():
+            if not (template_dir / "template_allergen.xlsx").exists():
                 st.error("Templates allergènes manquants (templates/allergen).")
             elif not master_upload:
                 st.error("Upload d'abord le référentiel maître (colonne de gauche).")
