@@ -3,20 +3,18 @@ from __future__ import annotations
 # Régimes (libellés visibles dans les templates)
 REG_STANDARD = "Standards"
 REG_VEGETARIEN = "Végétariens"
-REG_VEGETALIEN = "Végétaliens"
 REG_HYPO = "Hypocaloriques "
 
 # Pour compatibilité avec ton parseur de menus existant :
 # - "Sans lactose" correspond à la colonne "sans lactose"
-# - "Spéciaux" correspond à la colonne "avec lactose" (ou régimes spéciaux)
+# - "Spéciaux avec lactose" correspond à la colonne "avec lactose" (anciennement "régimes spéciaux")
 REG_SPEC_SANS = "Sans lactose"
-REG_SPEC_AVEC = "Spéciaux"
+REG_SPEC_AVEC = "Spéciaux avec lactose"
 
 REGIMES_ORDER = [
     REG_STANDARD,
     REG_VEGETARIEN,
     REG_HYPO,
-    REG_VEGETALIEN,
     REG_SPEC_SANS,
     REG_SPEC_AVEC,
 ]
