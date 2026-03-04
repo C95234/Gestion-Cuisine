@@ -123,16 +123,16 @@ def planning_to_daily_totals(
     melted["qty"] = pd.to_numeric(melted["qty"], errors="coerce").fillna(0).astype(int)
 
     
-# Correct ISO-safe day mapping (Sunday first)
-day_index = {
-    "Dimanche": 0,
-    "Lundi": 1,
-    "Mardi": 2,
-    "Mercredi": 3,
-    "Jeudi": 4,
-    "Vendredi": 5,
-    "Samedi": 6,
-}
+    # Correct ISO-safe day mapping (Sunday first)
+    day_index = {
+        "Dimanche": 0,
+        "Lundi": 1,
+        "Mardi": 2,
+        "Mercredi": 3,
+        "Jeudi": 4,
+        "Vendredi": 5,
+        "Samedi": 6,
+    }
 
 week_start = week_monday - dt.timedelta(days=1)
 
