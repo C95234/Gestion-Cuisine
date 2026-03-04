@@ -122,12 +122,24 @@ def planning_to_daily_totals(
     melted = df.melt(id_vars=["Site"], value_vars=day_cols, var_name="day_name", value_name="qty")
     melted["qty"] = pd.to_numeric(melted["qty"], errors="coerce").fillna(0).astype(int)
 
-    day_index = {name: i for i, name in enumerate(["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"])}
-    # Correction: include the Sunday before the ISO week to avoid month shift
-    week_start = week_monday - dt.timedelta(days=1)
-    melted["date"] = melted["day_name"].map(
-        lambda d: week_start + dt.timedelta(days=day_index.get(d, 0))
-    )
+    
+# Correct ISO-safe day mapping (Sunday first)
+day_index = {
+    "Dimanche": 0,
+    "Lundi": 1,
+    "Mardi": 2,
+    "Mercredi": 3,
+    "Jeudi": 4,
+    "Vendredi": 5,
+    "Samedi": 6,
+}
+
+week_start = week_monday - dt.timedelta(days=1)
+
+melted["date"] = melted["day_name"].map(
+    lambda d: week_start + dt.timedelta(days=day_index.get(d, 0))
+)
+
     melted = melted.drop(columns=["day_name"])
 
     out = melted.groupby(["date", "Site"], as_index=False)["qty"].sum()
@@ -156,12 +168,24 @@ def mixe_lisse_to_daily_totals(
     melted = df.melt(id_vars=["Site"], value_vars=day_cols, var_name="day_name", value_name="qty")
     melted["qty"] = pd.to_numeric(melted["qty"], errors="coerce").fillna(0).astype(int)
 
-    day_index = {name: i for i, name in enumerate(["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"])}
-    # Correction: include the Sunday before the ISO week to avoid month shift
-    week_start = week_monday - dt.timedelta(days=1)
-    melted["date"] = melted["day_name"].map(
-        lambda d: week_start + dt.timedelta(days=day_index.get(d, 0))
-    )
+    
+# Correct ISO-safe day mapping (Sunday first)
+day_index = {
+    "Dimanche": 0,
+    "Lundi": 1,
+    "Mardi": 2,
+    "Mercredi": 3,
+    "Jeudi": 4,
+    "Vendredi": 5,
+    "Samedi": 6,
+}
+
+week_start = week_monday - dt.timedelta(days=1)
+
+melted["date"] = melted["day_name"].map(
+    lambda d: week_start + dt.timedelta(days=day_index.get(d, 0))
+)
+
 
     out = melted.groupby(["date", "Site"], as_index=False)["qty"].sum()
     out = out.rename(columns={"Site": "site", "qty": "qty_ml"})
