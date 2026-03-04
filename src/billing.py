@@ -82,6 +82,27 @@ def is_mixe_lisse_regime(regime: str) -> bool:
 
 # -----------------------------
 # Planning conversion
+
+
+def _date_from_week_and_dayname(week_monday: dt.date, day_name: str) -> dt.date:
+    """Return the real calendar date for the ISO week of week_monday and a French day name.
+
+    Uses ISO weeks (Monday=1 .. Sunday=7) so month boundaries and 'month starts on Sunday' are handled correctly.
+    """
+    iso = week_monday.isocalendar()
+    iso_year = int(iso.year)
+    iso_week = int(iso.week)
+    day_index = {
+        "Lundi": 1,
+        "Mardi": 2,
+        "Mercredi": 3,
+        "Jeudi": 4,
+        "Vendredi": 5,
+        "Samedi": 6,
+        "Dimanche": 7,
+    }
+    return dt.date.fromisocalendar(iso_year, iso_week, day_index.get(str(day_name), 1))
+
 # -----------------------------
 
 def planning_to_daily_totals(
@@ -123,7 +144,7 @@ def planning_to_daily_totals(
     melted["qty"] = pd.to_numeric(melted["qty"], errors="coerce").fillna(0).astype(int)
 
     day_index = {name: i for i, name in enumerate(["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"])}
-    melted["date"] = melted["day_name"].map(lambda d: week_monday + dt.timedelta(days=day_index.get(d, 0)))
+    melted["date"] = melted["day_name"].map(lambda d: _date_from_week_and_dayname(week_monday, d))
     melted = melted.drop(columns=["day_name"])
 
     out = melted.groupby(["date", "Site"], as_index=False)["qty"].sum()
@@ -153,7 +174,7 @@ def mixe_lisse_to_daily_totals(
     melted["qty"] = pd.to_numeric(melted["qty"], errors="coerce").fillna(0).astype(int)
 
     day_index = {name: i for i, name in enumerate(["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"])}
-    melted["date"] = melted["day_name"].map(lambda d: week_monday + dt.timedelta(days=day_index.get(d, 0)))
+    melted["date"] = melted["day_name"].map(lambda d: _date_from_week_and_dayname(week_monday, d))
 
     out = melted.groupby(["date", "Site"], as_index=False)["qty"].sum()
     out = out.rename(columns={"Site": "site", "qty": "qty_ml"})
