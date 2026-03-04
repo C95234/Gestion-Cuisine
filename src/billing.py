@@ -134,12 +134,11 @@ def planning_to_daily_totals(
         "Samedi": 6,
     }
 
-week_start = week_monday - dt.timedelta(days=1)
+    week_start = week_monday - dt.timedelta(days=1)
 
-melted["date"] = melted["day_name"].map(
-    lambda d: week_start + dt.timedelta(days=day_index.get(d, 0))
-)
-
+    melted["date"] = melted["day_name"].map(
+        lambda d: week_start + dt.timedelta(days=day_index.get(d, 0))
+    )
     melted = melted.drop(columns=["day_name"])
 
     out = melted.groupby(["date", "Site"], as_index=False)["qty"].sum()
