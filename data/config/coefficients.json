@@ -1,0 +1,12 @@
+[
+  {
+    "name": "1",
+    "value": 1.0,
+    "default_unit": "unité"
+  },
+  {
+    "name": "1 kg",
+    "value": 1.0,
+    "default_unit": "kg"
+  }
+]
