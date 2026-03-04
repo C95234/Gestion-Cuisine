@@ -168,22 +168,22 @@ def mixe_lisse_to_daily_totals(
     melted["qty"] = pd.to_numeric(melted["qty"], errors="coerce").fillna(0).astype(int)
 
     
-# Correct ISO-safe day mapping (Sunday first)
-day_index = {
-    "Dimanche": 0,
-    "Lundi": 1,
-    "Mardi": 2,
-    "Mercredi": 3,
-    "Jeudi": 4,
-    "Vendredi": 5,
-    "Samedi": 6,
-}
-
-week_start = week_monday - dt.timedelta(days=1)
-
-melted["date"] = melted["day_name"].map(
-    lambda d: week_start + dt.timedelta(days=day_index.get(d, 0))
-)
+    # Correct ISO-safe day mapping (Sunday first)
+    day_index = {
+        "Dimanche": 0,
+        "Lundi": 1,
+        "Mardi": 2,
+        "Mercredi": 3,
+        "Jeudi": 4,
+        "Vendredi": 5,
+        "Samedi": 6,
+    }
+    
+    week_start = week_monday - dt.timedelta(days=1)
+    
+    melted["date"] = melted["day_name"].map(
+        lambda d: week_start + dt.timedelta(days=day_index.get(d, 0))
+    )
 
 
     out = melted.groupby(["date", "Site"], as_index=False)["qty"].sum()
