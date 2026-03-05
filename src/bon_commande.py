@@ -1,6 +1,7 @@
 """Génération du Bon de Commande (BC).
 
-
+✅ Fichier À MODIFIER si tu veux changer la logique/mise en forme du bon de commande.
+"""
 from __future__ import annotations
 
 from typing import Dict, List
