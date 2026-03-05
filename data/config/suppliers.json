@@ -1,1 +1,32 @@
-[]
+[
+  {
+    "name": "Sysco",
+    "customer_code": "445 538",
+    "coord1": "03 44 63 40 50",
+    "coord2": ""
+  },
+  {
+    "name": "Transgourmet",
+    "customer_code": "100 55 007",
+    "coord1": "08 26 10 17 20",
+    "coord2": ""
+  },
+  {
+    "name": "Cercle Vert",
+    "customer_code": "193 028",
+    "coord1": "01 34 70 97 95",
+    "coord2": ""
+  },
+  {
+    "name": "Pomona",
+    "customer_code": "42 606",
+    "coord1": "01 34 30 15 35",
+    "coord2": ""
+  },
+  {
+    "name": "Daumesnil",
+    "customer_code": "86 58",
+    "coord1": "01 46 87 71 71",
+    "coord2": ""
+  }
+]
