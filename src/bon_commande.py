@@ -1,7 +1,5 @@
 """Génération du Bon de Commande (BC).
 
-✅ Fichier À MODIFIER si tu veux changer la logique/mise en forme du bon de commande.
-"""
 
 from __future__ import annotations
 
@@ -101,7 +99,7 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
 
     planning_keys = counts[["Regime_planning", "reg_key_planning"]].drop_duplicates().to_dict("records")
 
-    def best_match_planning_key(menu_key: str) -> Optional[str]:
+    def best_match_planning_key(menu_key: str):
         if not menu_key:
             return None
         mtoks = set(menu_key.split())
@@ -174,16 +172,31 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
         grouped["Unité"] = "unité"
     if "Fournisseur" not in grouped.columns:
         grouped["Fournisseur"] = ""
-    grouped["Prix cible unitaire"] = ""
 
+    grouped["Prix cible unitaire"] = ""
     grouped["Prix cible total"] = ""
     grouped["Poids unitaire (kg)"] = ""
     grouped["Poids total (kg)"] = ""
 
-    grouped = grouped[["Jour(s)", "Repas", "Typologie", "Produit", "Effectif", "Coefficient", "Unité", "Fournisseur", "Quantité", "Prix cible unitaire", "Prix cible total", "Poids unitaire (kg)", "Poids total (kg)"]]
+    grouped = grouped[
+        [
+            "Jour(s)",
+            "Repas",
+            "Typologie",
+            "Produit",
+            "Effectif",
+            "Coefficient",
+            "Unité",
+            "Fournisseur",
+            "Quantité",
+            "Prix cible unitaire",
+            "Prix cible total",
+            "Poids unitaire (kg)",
+            "Poids total (kg)",
+        ]
+    ]
+
     return grouped.sort_values(["Repas", "Typologie", "Produit"]).reset_index(drop=True)
-
-
 
 
 
