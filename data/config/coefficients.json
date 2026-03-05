@@ -8,5 +8,50 @@
     "name": "1 kg",
     "value": 1.0,
     "default_unit": "kg"
+  },
+  {
+    "name": "Entrée",
+    "value": 0.1,
+    "default_unit": "kg"
+  },
+  {
+    "name": "5/1 Entrée",
+    "value": 0.04,
+    "default_unit": "unité"
+  },
+  {
+    "name": "3/1 Entrée",
+    "value": 0.06,
+    "default_unit": "unité"
+  },
+  {
+    "name": "Viande pièce",
+    "value": 0.12,
+    "default_unit": "kg"
+  },
+  {
+    "name": "Sautés",
+    "value": 0.16,
+    "default_unit": "kg"
+  },
+  {
+    "name": "Féculents",
+    "value": 0.07,
+    "default_unit": "kg"
+  },
+  {
+    "name": "Garnitures et +",
+    "value": 0.2,
+    "default_unit": "kg"
+  },
+  {
+    "name": "Légumes sg",
+    "value": 0.25,
+    "default_unit": "kg"
+  },
+  {
+    "name": "5/1 Garnitures",
+    "value": 0.08,
+    "default_unit": "unité"
   }
 ]
