@@ -1,7 +1,8 @@
 """Génération du Bon de Commande (BC).
 
-✅ Fichier À MODIFIER si tu veux changer la logique/mise en forme du bon de commande.
+Fichier modifié pour associer automatiquement une unité au coefficient.
 """
+
 from __future__ import annotations
 
 from typing import Dict, List
@@ -16,27 +17,18 @@ from .processor import (
     normalize_regime_label,
 )
 
-# ==============================
-# NOUVELLE FONCTION
-# Déduit l’unité depuis le coefficient
-# ==============================
+# association coefficient → unité
+COEFF_UNITE = {
+    "1": "unité",
+    "0.15": "kg",
+    "0.2": "kg",
+    "0.05": "L",
+    "0.01": "g",
+}
+
 
 def unite_depuis_coefficient(c):
-    c = str(c).lower()
-
-    if "kg" in c:
-        return "kg"
-
-    if "g" in c:
-        return "g"
-
-    if "ml" in c:
-        return "ml"
-
-    if "l" in c:
-        return "L"
-
-    return "unité"
+    return COEFF_UNITE.get(str(c), "unité")
 
 
 def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuItem]) -> pd.DataFrame:
@@ -67,7 +59,6 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
             continue
 
         df2 = df.copy()
-
         df2["Regime"] = df2["Regime"].apply(normalize_regime_label)
 
         agg = df2.groupby("Regime")[DAY_NAMES].sum(numeric_only=True)
@@ -87,33 +78,6 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
 
     counts = pd.DataFrame(records)
 
-    planning_keys = counts[["Regime_planning", "reg_key_planning"]].drop_duplicates().to_dict("records")
-
-    def best_match_planning_key(menu_key: str):
-
-        if not menu_key:
-            return None
-
-        mtoks = set(menu_key.split())
-
-        best_key = None
-        best_score = -1
-
-        for rec in planning_keys:
-
-            ptoks = set((rec["reg_key_planning"] or "").split())
-
-            score = len(mtoks & ptoks)
-
-            if score > best_score:
-                best_score = score
-                best_key = rec["reg_key_planning"]
-
-        if best_score <= 0:
-            return None
-
-        return best_key
-
     menu_df = pd.DataFrame(
         [
             {
@@ -121,19 +85,15 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
                 "Jour": DAY_NAMES[it.date.weekday()],
                 "Repas": it.repas,
                 "Categorie": it.categorie,
-                "Regime_menu": it.regime,
-                "reg_key_menu": norm_reg(it.regime),
                 "Produit": it.produit,
             }
             for it in menu_items
         ]
     )
 
-    menu_df["reg_key_planning"] = menu_df["reg_key_menu"].apply(best_match_planning_key)
-
     merged = menu_df.merge(
-        counts[["Repas", "Jour", "reg_key_planning", "Nb_personnes"]],
-        on=["Repas", "Jour", "reg_key_planning"],
+        counts[["Repas", "Jour", "Nb_personnes"]],
+        on=["Repas", "Jour"],
         how="left",
     )
 
@@ -149,7 +109,6 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
     ].rename(columns={"Categorie": "Typologie", "Nb_personnes": "Effectif"})
 
     base["Produit"] = base["Produit"].astype(str)
-
     base["Produit_base"] = base["Produit"].apply(normalize_produit_for_grouping)
 
     base["Quantité"] = (base["Effectif"] * 1.0).round().astype(int)
@@ -195,29 +154,3 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
     ]
 
     return grouped.sort_values(["Repas", "Typologie", "Produit"]).reset_index(drop=True)
-
-
-# ==============================
-# RÈGLE AJOUTÉE : VIANDE FRAÎCHE
-# ==============================
-
-from datetime import timedelta
-
-def est_viande_fraiche(ligne):
-    try:
-        coef = float(ligne.get("coefficient", 0))
-        return coef == 0.15
-    except:
-        return False
-
-def appliquer_regle_viande_si_applicable(ligne):
-
-    if est_viande_fraiche(ligne) and "dates_conso" in ligne:
-
-        date_premiere = min(ligne["dates_conso"])
-
-        ligne["date_livraison"] = date_premiere - timedelta(days=1)
-
-        ligne["couverture"] = 8
-
-    return ligne
