@@ -1,8 +1,6 @@
 """Génération du Bon de Commande (BC).
 
-Version corrigée :
-- rétablit la jointure correcte avec les régimes (ne casse plus les effectifs)
-- associe automatiquement une unité au coefficient
+Fichier modifié pour associer automatiquement une unité au coefficient.
 """
 
 from __future__ import annotations
@@ -80,35 +78,6 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
 
     counts = pd.DataFrame(records)
 
-    planning_keys = counts[
-        ["Regime_planning", "reg_key_planning"]
-    ].drop_duplicates().to_dict("records")
-
-    def best_match_planning_key(menu_key: str):
-
-        if not menu_key:
-            return None
-
-        mtoks = set(menu_key.split())
-
-        best_key = None
-        best_score = -1
-
-        for rec in planning_keys:
-
-            ptoks = set((rec["reg_key_planning"] or "").split())
-
-            score = len(mtoks & ptoks)
-
-            if score > best_score:
-                best_score = score
-                best_key = rec["reg_key_planning"]
-
-        if best_score <= 0:
-            return None
-
-        return best_key
-
     menu_df = pd.DataFrame(
         [
             {
@@ -116,29 +85,15 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
                 "Jour": DAY_NAMES[it.date.weekday()],
                 "Repas": it.repas,
                 "Categorie": it.categorie,
-                "Regime_menu": it.regime,
-                "reg_key_menu": norm_reg(it.regime),
                 "Produit": it.produit,
             }
             for it in menu_items
         ]
     )
 
-    menu_df["reg_key_planning"] = menu_df["reg_key_menu"].apply(
-        best_match_planning_key
-    )
-
     merged = menu_df.merge(
-        counts[
-            [
-                "Repas",
-                "Jour",
-                "reg_key_planning",
-                "Nb_personnes",
-                "Regime_planning",
-            ]
-        ],
-        on=["Repas", "Jour", "reg_key_planning"],
+        counts[["Repas", "Jour", "Nb_personnes"]],
+        on=["Repas", "Jour"],
         how="left",
     )
 
@@ -150,24 +105,11 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
     merged["Unité"] = merged["Coefficient"].apply(unite_depuis_coefficient)
 
     base = merged[
-        [
-            "Date",
-            "Jour",
-            "Repas",
-            "Categorie",
-            "Produit",
-            "Nb_personnes",
-            "Coefficient",
-            "Unité",
-            "Fournisseur",
-        ]
+        ["Date", "Jour", "Repas", "Categorie", "Produit", "Nb_personnes", "Coefficient", "Unité", "Fournisseur"]
     ].rename(columns={"Categorie": "Typologie", "Nb_personnes": "Effectif"})
 
     base["Produit"] = base["Produit"].astype(str)
-
-    base["Produit_base"] = base["Produit"].apply(
-        normalize_produit_for_grouping
-    )
+    base["Produit_base"] = base["Produit"].apply(normalize_produit_for_grouping)
 
     base["Quantité"] = (base["Effectif"] * 1.0).round().astype(int)
 
@@ -178,9 +120,7 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
         )
         .agg(
             {
-                "Jour": lambda s: ", ".join(
-                    sorted(set(s), key=lambda x: DAY_NAMES.index(x))
-                ),
+                "Jour": lambda s: ", ".join(sorted(set(s), key=lambda x: DAY_NAMES.index(x))),
                 "Effectif": "sum",
                 "Quantité": "sum",
             }
@@ -213,6 +153,4 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
         ]
     ]
 
-    return grouped.sort_values(
-        ["Repas", "Typologie", "Produit"]
-    ).reset_index(drop=True)
+    return grouped.sort_values(["Repas", "Typologie", "Produit"]).reset_index(drop=True)
