@@ -85,23 +85,24 @@ def is_mixe_lisse_regime(regime: str) -> bool:
 
 
 def _date_from_week_and_dayname(week_monday: dt.date, day_name: str) -> dt.date:
-    """Return the real calendar date for the ISO week of week_monday and a French day name.
+    """Return the real calendar date for a French day name in the planning week.
 
-    Uses ISO weeks (Monday=1 .. Sunday=7) so month boundaries and 'month starts on Sunday' are handled correctly.
+    Uses the actual Monday date provided by the UI instead of rebuilding an ISO
+    week, which could shift boundary dates across months/years.
     """
-    iso = week_monday.isocalendar()
-    iso_year = int(iso.year)
-    iso_week = int(iso.week)
-    day_index = {
-        "Lundi": 1,
-        "Mardi": 2,
-        "Mercredi": 3,
-        "Jeudi": 4,
-        "Vendredi": 5,
-        "Samedi": 6,
-        "Dimanche": 7,
+    day_offsets = {
+        "Lundi": 0,
+        "Mardi": 1,
+        "Mercredi": 2,
+        "Jeudi": 3,
+        "Vendredi": 4,
+        "Samedi": 5,
+        "Dimanche": 6,
     }
-    return dt.date.fromisocalendar(iso_year, iso_week, day_index.get(str(day_name), 1))
+    name = str(day_name).strip()
+    if name not in day_offsets:
+        raise ValueError(f"Jour invalide dans le planning: {day_name}")
+    return week_monday + dt.timedelta(days=day_offsets[name])
 
 # -----------------------------
 
@@ -200,7 +201,7 @@ def save_week(
         if df is None or df.empty:
             return pd.DataFrame(columns=["date","site","category","qty","week_monday","source"])
         out = df.copy()
-        out["date"] = pd.to_datetime(out["date"]).dt.date
+        out["date"] = pd.to_datetime(out["date"], format="mixed", errors="coerce").dt.date
         out["site"] = out["site"].astype(str).map(norm_site_facturation)
         out["category"] = category
         out["qty"] = pd.to_numeric(out[qty_col], errors="coerce").fillna(0).astype(int)
@@ -215,8 +216,8 @@ def save_week(
 
     p = _records_path()
     if p.exists():
-        old = pd.read_csv(p, parse_dates=["date"])
-        old["date"] = pd.to_datetime(old["date"]).dt.date
+        old = pd.read_csv(p)
+        old["date"] = pd.to_datetime(old["date"], format="mixed", errors="coerce").dt.date
     else:
         old = pd.DataFrame(columns=["record_id","date","site","category","qty","week_monday","source"])
 
@@ -244,8 +245,8 @@ def load_records() -> pd.DataFrame:
     p = _records_path()
     if not p.exists():
         return pd.DataFrame(columns=["record_id","date","site","category","qty","week_monday","source"])
-    df = pd.read_csv(p, parse_dates=["date"])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df = pd.read_csv(p)
+    df["date"] = pd.to_datetime(df["date"], format="mixed", errors="coerce").dt.date
     df["site"] = df["site"].astype(str)
     df["category"] = df["category"].astype(str)
     df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0).astype(int)
@@ -714,8 +715,8 @@ def apply_corrected_monthly_workbook(
     # Load current records
     p = _records_path()
     if p.exists():
-        old = pd.read_csv(p, parse_dates=["date"])
-        old["date"] = pd.to_datetime(old["date"]).dt.date
+        old = pd.read_csv(p)
+        old["date"] = pd.to_datetime(old["date"], format="mixed", errors="coerce").dt.date
     else:
         old = pd.DataFrame(columns=["date","site","category","qty","week_monday","source"])
 

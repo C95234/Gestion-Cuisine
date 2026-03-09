@@ -915,7 +915,7 @@ try:
             st.warning("Aucune semaine mémorisée pour le moment.")
         else:
             records = records.copy()
-            records["date"] = pd.to_datetime(records["date"]).dt.date
+            records["date"] = pd.to_datetime(records["date"], format="mixed", errors="coerce").dt.date
             months = sorted({(d.year, d.month) for d in records["date"]})
             month_labels = [f"{y}-{m:02d}" for (y, m) in months]
             _ = st.multiselect("Mois présents (info)", options=month_labels, default=month_labels)
