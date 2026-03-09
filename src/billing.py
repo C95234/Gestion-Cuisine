@@ -18,7 +18,6 @@ from openpyxl.utils import get_column_letter
 # -----------------------------
 
 def _data_dir() -> Path:
-    """Local persistent folder (next to the app) to store weekly saved plannings."""
     base = Path(__file__).resolve().parent.parent
     d = base / "data" / "facturation"
     d.mkdir(parents=True, exist_ok=True)
@@ -48,7 +47,7 @@ def _write_meta(meta: dict) -> None:
 
 
 # -----------------------------
-# Normalization helpers
+# Helpers
 # -----------------------------
 
 def _norm(s: str) -> str:
@@ -56,14 +55,16 @@ def _norm(s: str) -> str:
 
 
 def norm_site_facturation(site: str) -> str:
-    """Business rule: '24 ter' + '24 simple' must be billed as a single column 'Internat'."""
+
     s0 = str(site or "").strip()
     sN = _norm(s0)
 
     if re.fullmatch(r"24\s*(ter|simple)", sN):
         return "Internat"
+
     if sN in {"24ter", "24simple"}:
         return "Internat"
+
     if "24" in sN and ("ter" in sN or "simple" in sN):
         return "Internat"
 
@@ -81,22 +82,15 @@ def is_mixe_lisse_regime(regime: str) -> bool:
 
 
 # -----------------------------
-# Planning conversion
+# DATE CORRECTION (BUG FIX)
 # -----------------------------
 
 def _date_from_week_and_dayname(week_monday: dt.date, day_name: str) -> dt.date:
     """
-    Convert a French day name from the planning into the real calendar date.
+    Convert planning day name into real date.
 
-    This version avoids ISO week reconstruction (which can shift dates across
-    months or years) and instead directly offsets from the actual Monday date
-    of the planning week.
-
-    Guarantees correct behavior for:
-    - months starting on Sunday
-    - weeks overlapping two months
-    - year boundaries
-    - February / leap years
+    Uses direct offset from week Monday to avoid ISO week bugs
+    (which can shift dates across months or years).
     """
 
     day_index = {
@@ -112,7 +106,7 @@ def _date_from_week_and_dayname(week_monday: dt.date, day_name: str) -> dt.date:
     name = str(day_name).strip()
 
     if name not in day_index:
-        raise ValueError(f"Nom de jour invalide dans le planning: {day_name}")
+        raise ValueError(f"Jour invalide dans planning: {day_name}")
 
     return week_monday + dt.timedelta(days=day_index[name])
 
@@ -156,13 +150,17 @@ def planning_to_daily_totals(
     day_cols = [c for c in ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"] if c in df.columns]
 
     melted = df.melt(id_vars=["Site"], value_vars=day_cols, var_name="day_name", value_name="qty")
+
     melted["qty"] = pd.to_numeric(melted["qty"], errors="coerce").fillna(0).astype(int)
 
     melted["date"] = melted["day_name"].map(lambda d: _date_from_week_and_dayname(week_monday, d))
+
     melted = melted.drop(columns=["day_name"])
 
     out = melted.groupby(["date","Site"], as_index=False)["qty"].sum()
+
     out = out.rename(columns={"Site":"site","qty":"qty_repas"})
+
     return out
 
 
@@ -173,6 +171,7 @@ def mixe_lisse_to_daily_totals(
 ) -> pd.DataFrame:
 
     frames = []
+
     for df in (dej, din):
         if df is not None and not df.empty:
             frames.append(df.copy())
@@ -185,18 +184,112 @@ def mixe_lisse_to_daily_totals(
     day_cols = [c for c in ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"] if c in df.columns]
 
     melted = df.melt(id_vars=["Site"], value_vars=day_cols, var_name="day_name", value_name="qty")
+
     melted["qty"] = pd.to_numeric(melted["qty"], errors="coerce").fillna(0).astype(int)
 
     melted["date"] = melted["day_name"].map(lambda d: _date_from_week_and_dayname(week_monday, d))
 
     out = melted.groupby(["date","Site"], as_index=False)["qty"].sum()
+
     out = out.rename(columns={"Site":"site","qty":"qty_ml"})
+
     return out
 
 
-# (le reste du fichier est inchangé : save_week, load_records,
-# export Excel, recap, import corrections…)
+# -----------------------------
+# Persist / load
+# -----------------------------
 
-# Pour éviter un message interminable ici, je te confirme :
-# aucune autre partie du fichier ne provoque le bug de décalage
-# de date. La correction ci-dessus suffit pour tous les mois.
+def save_week(
+    *,
+    week_monday: dt.date,
+    repas_daily: pd.DataFrame,
+    ml_daily: pd.DataFrame,
+    source_filename: str = "",
+) -> Tuple[int, int]:
+
+    def _norm_df(df: pd.DataFrame, qty_col: str, category: str) -> pd.DataFrame:
+
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["date","site","category","qty","week_monday","source"])
+
+        out = df.copy()
+
+        out["date"] = pd.to_datetime(out["date"]).dt.date
+        out["site"] = out["site"].astype(str).map(norm_site_facturation)
+        out["category"] = category
+        out["qty"] = pd.to_numeric(out[qty_col], errors="coerce").fillna(0).astype(int)
+        out["week_monday"] = week_monday.isoformat()
+        out["source"] = source_filename
+
+        out["record_id"] = [str(uuid.uuid4()) for _ in range(len(out))]
+
+        return out[["record_id","date","site","category","qty","week_monday","source"]]
+
+    a = _norm_df(repas_daily, "qty_repas", "repas")
+    b = _norm_df(ml_daily, "qty_ml", "mixe_lisse")
+
+    new = pd.concat([a, b], ignore_index=True)
+
+    p = _records_path()
+
+    if p.exists():
+
+        old = pd.read_csv(p, parse_dates=["date"])
+        old["date"] = pd.to_datetime(old["date"]).dt.date
+
+    else:
+
+        old = pd.DataFrame(columns=["record_id","date","site","category","qty","week_monday","source"])
+
+    week_dates = {week_monday + dt.timedelta(days=i) for i in range(7)}
+
+    mask_keep = ~(
+        old["date"].isin(list(week_dates))
+        & old["category"].isin(["repas","mixe_lisse"])
+    )
+
+    old = old.loc[mask_keep].copy()
+
+    merged = pd.concat([old, new], ignore_index=True)
+
+    merged.to_csv(p, index=False)
+
+    meta = _read_meta()
+
+    meta.setdefault("saved_weeks", [])
+
+    if week_monday.isoformat() not in meta["saved_weeks"]:
+
+        meta["saved_weeks"].append(week_monday.isoformat())
+
+        meta["saved_weeks"] = sorted(meta["saved_weeks"])
+
+    _write_meta(meta)
+
+    return int(len(a)), int(len(b))
+
+
+# -----------------------------
+# Load records
+# -----------------------------
+
+def load_records() -> pd.DataFrame:
+
+    p = _records_path()
+
+    if not p.exists():
+
+        return pd.DataFrame(columns=["record_id","date","site","category","qty","week_monday","source"])
+
+    df = pd.read_csv(p, parse_dates=["date"])
+
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+
+    df["site"] = df["site"].astype(str)
+
+    df["category"] = df["category"].astype(str)
+
+    df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0).astype(int)
+
+    return df
