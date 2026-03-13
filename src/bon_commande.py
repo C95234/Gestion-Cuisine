@@ -98,12 +98,12 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
         ]
     )
 
-    # regime non utilisé car effectif total par jour
+    counts["Regime_planning"] = counts["Regime_planning"].apply(normalize_regime_label)
 
     merged = menu_df.merge(
-        counts[["Repas", "Jour", "Nb_personnes"]],
-        left_on=["Repas","Jour"],
-        right_on=["Repas","Jour"],
+        counts[["Repas", "Jour", "Regime_planning", "Nb_personnes"]],
+        left_on=["Repas","Jour","Regime_menu"],
+        right_on=["Repas","Jour","Regime_planning"],
         how="left",
     )
 
