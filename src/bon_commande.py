@@ -78,9 +78,6 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
 
     counts = pd.DataFrame(records)
 
-    # CORRECTION : on additionne tous les régimes pour obtenir l'effectif total
-    counts = counts.groupby(["Repas","Jour"], as_index=False)["Nb_personnes"].sum()
-
     menu_df = pd.DataFrame(
         [
             {
@@ -88,19 +85,15 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
                 "Jour": DAY_NAMES[it.date.weekday()],
                 "Repas": it.repas,
                 "Categorie": it.categorie,
-                "Regime_menu": normalize_regime_label(it.regime),
                 "Produit": it.produit,
             }
             for it in menu_items
         ]
     )
 
-    # regime no longer used
-
     merged = menu_df.merge(
         counts[["Repas", "Jour", "Nb_personnes"]],
-        left_on=["Repas","Jour"],
-        right_on=["Repas","Jour"],
+        on=["Repas", "Jour"],
         how="left",
     )
 
