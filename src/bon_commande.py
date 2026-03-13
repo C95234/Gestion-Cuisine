@@ -85,15 +85,19 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
                 "Jour": DAY_NAMES[it.date.weekday()],
                 "Repas": it.repas,
                 "Categorie": it.categorie,
+                "Regime_menu": normalize_regime_label(it.regime),
                 "Produit": it.produit,
             }
             for it in menu_items
         ]
     )
 
+    counts["Regime_planning"] = counts["Regime_planning"].apply(normalize_regime_label)
+
     merged = menu_df.merge(
-        counts[["Repas", "Jour", "Nb_personnes"]],
-        on=["Repas", "Jour"],
+        counts[["Repas", "Jour", "Regime_planning", "Nb_personnes"]],
+        left_on=["Repas","Jour","Regime_menu"],
+        right_on=["Repas","Jour","Regime_planning"],
         how="left",
     )
 
