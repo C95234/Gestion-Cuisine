@@ -78,17 +78,6 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
 
     counts = pd.DataFrame(records)
 
-    def best_match_planning_key(menu_reg_key: str) -> str:
-        if menu_reg_key in set(counts.get("reg_key_planning", pd.Series(dtype=str)).astype(str)):
-            return menu_reg_key
-        if menu_reg_key.startswith("sans"):
-            return "sans"
-        if menu_reg_key.startswith("special") or menu_reg_key.startswith("speciaux"):
-            return "speciaux"
-        if menu_reg_key.startswith("hypocal"):
-            return "hypocaloriques"
-        return menu_reg_key
-
     menu_df = pd.DataFrame(
         [
             {
@@ -96,19 +85,15 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
                 "Jour": DAY_NAMES[it.date.weekday()],
                 "Repas": it.repas,
                 "Categorie": it.categorie,
-                "Regime_menu": it.regime,
-                "reg_key_menu": norm_reg(it.regime),
                 "Produit": it.produit,
             }
             for it in menu_items
         ]
     )
 
-    menu_df["reg_key_planning"] = menu_df["reg_key_menu"].apply(best_match_planning_key)
-
     merged = menu_df.merge(
-        counts[["Repas", "Jour", "reg_key_planning", "Nb_personnes"]],
-        on=["Repas", "Jour", "reg_key_planning"],
+        counts[["Repas", "Jour", "Nb_personnes"]],
+        on=["Repas", "Jour"],
         how="left",
     )
 
