@@ -178,10 +178,8 @@ def load_allergen_reference(path: str) -> AllergenRef:
 
     Supporte 2 formats :
       1) Tableau classique (colonnes) : une colonne Plat + colonnes allergènes
-      2) Classeur au format 'Allergène ...' (plats en B4:B27 et X en C:R27, 1 feuille par service)
-         + optionnel : une feuille 'Overrides' (Plat + colonnes allergènes en -1/+1) pour mémoriser tes corrections.
-
-    Le parsing menu et la structure du tableau généré ne changent pas : l'intelligence est appliquée via Overrides.
+      2) Classeur au format "Allergène ..." (plats en B et colonnes allergènes)
+         + optionnel : une feuille "Overrides" (Plat + colonnes allergènes en -1/+1).
     """
     if path.lower().endswith(".ods"):
         raise ValueError(
@@ -191,10 +189,8 @@ def load_allergen_reference(path: str) -> AllergenRef:
 
     ref_df = None
 
-    # 1) Essai format tableau classique
     try:
         df = pd.read_excel(path, header=2)
-
         if df is not None and not df.empty:
             cols = {c: normalize_key(str(c)) for c in df.columns}
 
@@ -204,24 +200,22 @@ def load_allergen_reference(path: str) -> AllergenRef:
                     plat_col = c
                     break
 
-            # Si aucune colonne explicite n'est trouvée :
-            # dans ton fichier maître, les plats sont en général en 2e colonne
             if plat_col is None:
-                if len(df.columns) > 1:
+                preferred = [c for c in df.columns[:3] if "unnamed" in str(c).lower()]
+                if preferred:
+                    plat_col = preferred[0]
+                elif len(df.columns) > 1:
                     plat_col = df.columns[1]
                 else:
                     plat_col = df.columns[0]
 
             norm_to_real = {normalize_key(x): x for x in ALLERGEN_COLUMNS}
             col_map = {}
-
-            # Mapping direct des colonnes allergènes
             for c in df.columns:
                 nk = normalize_key(str(c))
                 if nk in norm_to_real:
                     col_map[c] = norm_to_real[nk]
 
-            # Rattrapage si les intitulés ne sont pas strictement identiques
             if len(col_map) < len(ALLERGEN_COLUMNS):
                 for c in df.columns:
                     nk = normalize_key(str(c))
@@ -230,52 +224,38 @@ def load_allergen_reference(path: str) -> AllergenRef:
                         if tnk and (tnk in nk or nk in tnk) and c not in col_map:
                             col_map[c] = tgt
 
-            # Si on a au moins une colonne allergène reconnue, on considère que le format est bon
             if col_map:
                 rows = []
-
                 for _, row in df.iterrows():
                     dish = normalize_space(str(row.get(plat_col, "") or "")).strip()
-
                     if not dish or dish.lower() == "nan":
                         continue
-
                     rec = {"Plat": dish}
                     for a in ALLERGEN_COLUMNS:
                         rec[a] = ""
-
                     for c, allergen_name in col_map.items():
                         if _truthy(row.get(c, "")):
                             rec[allergen_name] = "X"
-
                     rows.append(rec)
-
                 if rows:
                     ref_df = pd.DataFrame(rows)[["Plat"] + ALLERGEN_COLUMNS]
-
-    except Exception as e:
-        print("Erreur lecture format tableau classique :", e)
+    except Exception:
         ref_df = None
 
-    # 2) Sinon, format 'Allergène ...'
     if ref_df is None:
         ref_df = _extract_reference_from_allergen_workbook(path)
 
-    # Overrides (optionnel)
     overrides_df = _read_overrides_sheet(path)
     ref_df = _apply_overrides(ref_df, overrides_df)
 
-    # Construire map_key -> set(allergènes)
     map_key_to_allergens: Dict[str, Set[str]] = {}
     if ref_df is not None and not ref_df.empty:
         ref_df = ref_df.copy()
         ref_df["__k"] = ref_df["Plat"].apply(normalize_key)
-
         for _, row in ref_df.iterrows():
             k = row.get("__k", "")
             if not k:
                 continue
-
             aset = map_key_to_allergens.get(k, set())
             for a in ALLERGEN_COLUMNS:
                 if _truthy(row.get(a, "")):

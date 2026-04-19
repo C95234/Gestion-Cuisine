@@ -15,6 +15,7 @@ from .config import (
     ALLERGEN_COLUMNS
 )
 from .utils import normalize_space, normalize_key
+from .heuristics import heuristic_allergens
 
 # Positions fixes du template "Allergène déjeuner ..."
 REGIME_START_ROW = {
@@ -160,7 +161,7 @@ def _fill_meat_section(ws: Worksheet, meat_entries: List[str]) -> None:
 
 def fill_allergen_workbook(
     menus_by_day: Dict[date, Dict[str, Dict[str, Dict[str, str]]]],
-    allergen_ref_key_to_allergens: Dict[str, Set[str]],
+    allergen_ref,
     template_dir: str,
     out_path: str,
 ) -> Tuple[str, List[str]]:
@@ -201,9 +202,17 @@ def fill_allergen_workbook(
                     allergens = None
                     if dish and dish != "—":
                         k = normalize_key(dish)
-                        allergens = allergen_ref_key_to_allergens.get(k)
-                        if allergens is None:
-                            missing.append(dish)
+                        allergens = None
+                        if hasattr(allergen_ref, "lookup"):
+                            allergens, _ = allergen_ref.lookup(dish)
+                        elif isinstance(allergen_ref, dict):
+                            allergens = allergen_ref.get(k)
+                        if not allergens:
+                            guessed = heuristic_allergens(dish)
+                            if guessed:
+                                allergens = set(guessed)
+                            else:
+                                missing.append(dish)
                     _fill_row(ws, row, dish, allergens)
 
                 meat_candidates.append(plat)
