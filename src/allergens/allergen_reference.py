@@ -193,7 +193,7 @@ def load_allergen_reference(path: str) -> AllergenRef:
 
     # 1) Essai format tableau classique
     try:
-        df = pd.read_excel(path)
+        df = df = pd.read_excel(path, header=2)
         if df is not None and not df.empty:
             cols = {c: normalize_key(str(c)) for c in df.columns}
             plat_col = None
