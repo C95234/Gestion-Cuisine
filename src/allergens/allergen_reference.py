@@ -183,7 +183,7 @@ def load_allergen_reference(path: str) -> AllergenRef:
 
     Le parsing menu et la structure du tableau généré ne changent pas : l'intelligence est appliquée via Overrides.
     """
-    if path.lower().endswith('.ods'):
+    if path.lower().endswith(".ods"):
         raise ValueError(
             "Le référentiel allergènes doit être un fichier Excel (.xlsx). "
             "Merci de convertir ton .ods en .xlsx (Fichier > Enregistrer sous)."
@@ -204,13 +204,18 @@ def load_allergen_reference(path: str) -> AllergenRef:
                     plat_col = c
                     break
 
-            # Dans ton fichier maître, les plats sont en 2e colonne si aucune colonne explicite n'est reconnue
+            # Si aucune colonne explicite n'est trouvée :
+            # dans ton fichier maître, les plats sont en général en 2e colonne
             if plat_col is None:
-                plat_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+                if len(df.columns) > 1:
+                    plat_col = df.columns[1]
+                else:
+                    plat_col = df.columns[0]
 
             norm_to_real = {normalize_key(x): x for x in ALLERGEN_COLUMNS}
             col_map = {}
 
+            # Mapping direct des colonnes allergènes
             for c in df.columns:
                 nk = normalize_key(str(c))
                 if nk in norm_to_real:
@@ -231,6 +236,7 @@ def load_allergen_reference(path: str) -> AllergenRef:
 
                 for _, row in df.iterrows():
                     dish = normalize_space(str(row.get(plat_col, "") or "")).strip()
+
                     if not dish or dish.lower() == "nan":
                         continue
 
