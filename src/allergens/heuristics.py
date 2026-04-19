@@ -36,7 +36,7 @@ def heuristic_allergens(dish_name: str) -> Set[str]:
     if has('noix','amande','noisette','pistache','cajou'):
         out.add("Fruit à coques")
     if has('biere','bière','vin','alcool','cognac','rhum','armagnac'):
-        out.add("alcool dans sauce")
+        out.add("alcool")
     if has('sulfite','sulfites'):
         out.add("Sulfites")
     if has('ble','blé','farine','pates','pâtes','semoule','pain','chapelure','pizza','biscuit','gateau','gâteau'):
