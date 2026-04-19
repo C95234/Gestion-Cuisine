@@ -27,7 +27,7 @@ REGIME_START_ROW = {
 COURSE_ROW_OFFSETS = {"entree": 0, "plat": 1, "fromage": 2, "dessert": 3}
 
 # Dans le template, les allergènes sont en colonnes C -> R dans l'ordre ALLERGEN_COLUMNS
-ALLERGEN_LETTERS = list("CDEFGHIJKLMNOPQ")
+ALLERGEN_LETTERS = list("CDEFGHIJKLMNOPQR")
 ALLERGEN_COLS = {ALLERGEN_COLUMNS[i]: ALLERGEN_LETTERS[i] for i in range(len(ALLERGEN_COLUMNS))}
 
 MEAT_ENTRY_ROWS = [29, 31, 33]  # B33, B35, B37 (chacun sur 2 lignes fusionnées)
