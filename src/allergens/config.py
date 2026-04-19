@@ -36,4 +36,5 @@ ALLERGEN_COLUMNS = [
     "Lupin",
     "G6PD*",
     "Sulfites",
+    "alcool",
 ]
