@@ -1,21 +1,11 @@
-# Gestion-Cuisine — Dev local (pour modifier le Bon de Commande)
+# Gestion-Cuisine
 
-## Le fichier à modifier (Bon de Commande)
-➡️ **`src/bon_commande.py`**
+Application Streamlit de gestion de cuisine centrale : production, bon de commande, bons de livraison, facturation mensuelle, tableaux allergènes.
 
-C’est le SEUL fichier à toucher si tu veux changer :
-- les colonnes du bon de commande,
-- le regroupement (fournisseur / produit / repas / typologie),
-- les règles de quantités / unités / prix cibles,
-- l’ordre de tri, etc.
+En ligne : https://gestioncuisine.streamlit.app/
 
-L’application affiche dans la **sidebar** :
-- le chemin du fichier `src/bon_commande.py` réellement chargé,
-- son hash SHA1,
-- sa date de dernière modification,
-pour que tu sois sûr que tu modifies bien le bon fichier.
+## Lancer l'application en local
 
-## Lancer l’application (recommandé)
 ### Windows
 Double-clique **`Lancer-Gestion-Cuisine.bat`**
 
@@ -24,7 +14,23 @@ Double-clique **`Lancer-Gestion-Cuisine.bat`**
 ./lancer.sh
 ```
 
+Les deux scripts créent un environnement virtuel `.venv`, installent les dépendances (`requirements.txt`) puis lancent Streamlit.
+
+## Structure du code
+
+- `app.py` — point d'entrée Streamlit (mise en page, onglets, appels aux modules `src/`)
+- `src/processor.py` — parsing du planning/menu, production, bons de livraison
+- `src/bon_commande.py` — construction du bon de commande (colonnes, regroupement, quantités/unités/prix cibles)
+- `src/order_forms.py` — export des bons par fournisseur (Excel/PDF)
+- `src/billing.py` — mémorisation des semaines et facturation mensuelle
+- `src/config_store.py` — coefficients / unités / fournisseurs (listes mémorisées en JSON)
+- `src/allergens/` — génération et apprentissage des tableaux allergènes
+- `data/` — fichiers persistés par l'app (référentiel maître allergènes, config)
+- `templates/allergen/` — gabarit Excel des tableaux allergènes
+
+Pour changer les colonnes, le regroupement ou les règles de quantités/unités/prix du bon de commande, le seul fichier à modifier est `src/bon_commande.py`.
+
 ## Si tu ne vois pas tes modifications
-1. **Vérifie la sidebar** : le chemin affiché doit pointer vers ton dossier de travail.
-2. Ferme totalement l’app (CTRL+C dans le terminal), puis relance.
-3. Assure-toi de modifier **`src/bon_commande.py`** (et pas un autre dossier/copier-coller du projet).
+
+1. Ferme totalement l'app (CTRL+C dans le terminal), puis relance.
+2. Vérifie que tu modifies bien le dossier de travail que le script `Lancer-Gestion-Cuisine.bat` / `lancer.sh` utilise (et pas une autre copie du projet).

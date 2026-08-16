@@ -105,22 +105,6 @@ def _import_or_stop():
         billing = importlib.import_module("src.billing")
         importlib.reload(billing)
 
-        # Import facturation PDJ
-        pdj_billing = importlib.import_module("src.pdj_billing")
-        importlib.reload(pdj_billing)
-
-        # Import parseur PDJ (lecture bons PDF/Excel + OCR best-effort)
-        # Optionnel : certaines plateformes n'ont pas PyMuPDF (import fitz).
-        # Si absent, l'app doit continuer à fonctionner (saisie manuelle toujours possible).
-        pdj_facturation = None
-        try:
-            pdj_facturation = importlib.import_module("src.pdj_facturation")
-            importlib.reload(pdj_facturation)
-        except ModuleNotFoundError as e:
-            # Ne bloque pas le démarrage si fitz/PyMuPDF manque.
-            if "fitz" not in str(e):
-                raise
-
         # Import allergènes
         learner = importlib.import_module("src.allergens.learner")
         importlib.reload(learner)
@@ -128,7 +112,7 @@ def _import_or_stop():
         generator = importlib.import_module("src.allergens.generator")
         importlib.reload(generator)
 
-        return processor, cs, order_forms, billing, pdj_billing, pdj_facturation, learner, generator, bon_commande
+        return processor, cs, order_forms, billing, learner, generator, bon_commande
 
     except Exception as e:
         st.error("💥 Erreur lors d’un import (module src.*)")
@@ -137,7 +121,7 @@ def _import_or_stop():
         st.stop()
 
 
-processor, cs, order_forms, billing, pdj_billing, pdj_facturation, learner, generator, bon_commande = _import_or_stop()
+processor, cs, order_forms, billing, learner, generator, bon_commande = _import_or_stop()
 
 
 # Exports processor
@@ -165,18 +149,6 @@ load_records = billing.load_records
 export_monthly_workbook = billing.export_monthly_workbook
 apply_corrected_monthly_workbook = billing.apply_corrected_monthly_workbook
 delete_billing_records = getattr(billing, "delete_billing_records", None)
-
-# pdj_billing
-pdj_default_products = pdj_billing.DEFAULT_PRODUCTS
-pdj_load_records = pdj_billing.load_pdj_records
-pdj_add_records = pdj_billing.add_pdj_records
-pdj_load_prices = pdj_billing.load_unit_prices
-pdj_save_prices = pdj_billing.save_unit_prices
-pdj_add_money_adjustments = pdj_billing.add_money_adjustments
-pdj_load_money_adjustments = pdj_billing.load_money_adjustments
-pdj_export_monthly_workbook = pdj_billing.export_monthly_pdj_workbook
-pdj_delete_records = getattr(pdj_billing, "delete_pdj_records", None)
-pdj_delete_money_adjustments = getattr(pdj_billing, "delete_money_adjustments", None)
 
 # allergènes
 learn_from_filled_allergen_workbook = learner.learn_from_filled_allergen_workbook
@@ -410,13 +382,12 @@ try:
     prod_din_piv = make_production_pivot(planning["diner"])
 
     # ---- UI ----
-    tab_prod, tab_bc, tab_bl, tab_factu, tab_factu_pdj, tab_all = st.tabs(
+    tab_prod, tab_bc, tab_bl, tab_factu, tab_all = st.tabs(
         [
             "Production (Déj / Dîn)",
             "Bon de commande",
             "Bons de livraison",
             "Facturation mensuelle",
-            "Facturation PDJ",
             "Allergènes",
         ]
     )
@@ -846,18 +817,9 @@ try:
                 )
 
         st.divider()
-        if st.button("📌 Mémoriser cette semaine", type="primary"):
-            n_repas, n_ml = save_week(
-                week_monday=week_monday,
-                repas_daily=repas_daily,
-                ml_daily=ml_daily,
-                source_filename=getattr(planning_file, "name", ""),
-            )
-            st.success(f"Semaine mémorisée : {n_repas} lignes repas, {n_ml} lignes mixé/lissé.")
-
-        st.markdown("### Mémoriser plusieurs semaines d'un coup")
+        st.markdown("### Mémoriser les semaines (import multiple)")
         st.caption(
-            "Optionnel : upload plusieurs plannings (1 fichier = 1 semaine), choisis le lundi de départ, "
+            "Upload un ou plusieurs plannings (1 fichier = 1 semaine), choisis le lundi de départ, "
             "et l'app mémorise tout d'un coup."
         )
 
@@ -982,283 +944,6 @@ try:
                     st.error("Impossible d'importer ce fichier. Il doit provenir de l'export de l'app.")
                     st.code(repr(e))
 
-    with tab_factu_pdj:
-        st.subheader("Facturation PDJ")
-        st.caption(
-            "Objectif : enregistrer plusieurs bons de commande PDJ (par site), définir les prix unitaires par produit, "
-            "ajouter des consommations/avoirs manuels, puis exporter une facturation mensuelle détaillée."
-        )
-
-        # --- Sélection du mois (YYYY-MM)
-        today = dt.date.today()
-        default_month = f"{today.year:04d}-{today.month:02d}"
-        month = st.text_input("Mois à facturer (YYYY-MM)", value=default_month, key="pdj_month")
-
-        st.markdown("### 1) Saisie d'un bon PDJ")
-        c1, c2, c3 = st.columns([1, 1, 2])
-        with c1:
-            pdj_date = st.date_input("Date du bon (commande/livraison)", value=today, key="pdj_date")
-        with c2:
-            pdj_site = st.text_input("Site (ex: 24 ter, 24 simple, MAS TL...)", value="", key="pdj_site")
-        with c3:
-            pdj_source = st.text_input("Référence (optionnel)", value="", key="pdj_source")
-
-        pdj_file = st.file_uploader(
-            "Importer un bon PDJ (PDF/Excel) — optionnel (archivage)",
-            type=["xlsx", "xls", "xlsm", "pdf"],
-            key="pdj_import",
-        )
-
-        st.caption(
-            "Tu peux saisir **manuellement** (mode fiable) : une ligne = 1 produit, "
-            "ou importer un bon (Excel/PDF) pour **pré-remplir** les quantités. "
-            "Quel que soit le résultat, tout reste **modifiable** manuellement (utile pour la MAS)."
-        )
-
-        # Table de saisie pré-remplie (avec pré-lecture best-effort)
-        base_rows = pd.DataFrame({"product": pdj_default_products, "qty": 0.0})
-
-
-        if pdj_file is not None:
-            try:
-                parsed = pdj_facturation.parse_pdj_order_file(pdj_file)
-                items = getattr(parsed, "items", []) or []
-                detected_site = getattr(parsed, "site", None)
-
-                # Pré-remplissage du champ site si vide
-                if detected_site and not str(st.session_state.get("pdj_site", "")).strip():
-                    st.session_state["pdj_site"] = str(detected_site)
-
-                # Pré-remplissage des quantités (matching souple)
-                def _k(s: str) -> str:
-                    return " ".join(str(s or "").strip().lower().split())
-
-                items_map = { _k(p): float(q) for (p, q) in items if p and q is not None }
-                used = set()
-
-                # Remplit d'abord les produits déjà dans la liste
-                for i, prod in enumerate(list(base_rows["product"])):
-                    k = _k(prod)
-                    if k in items_map:
-                        base_rows.loc[i, "qty"] = items_map[k]
-                        used.add(k)
-                    else:
-                        # fallback: contient / ressemble (OCR)
-                        for kk, vv in items_map.items():
-                            if kk in k or k in kk:
-                                base_rows.loc[i, "qty"] = vv
-                                used.add(kk)
-                                break
-
-                # Ajoute les produits non reconnus dans la liste par défaut
-                extra = [(p, q) for (p, q) in items if _k(p) not in used]
-                if extra:
-                    extra_df = pd.DataFrame({"product": [p for p, _ in extra], "qty": [float(q) for _, q in extra]})
-                    base_rows = pd.concat([base_rows, extra_df], ignore_index=True)
-
-                msg = "📎 Bon importé : pré-remplissage effectué (à vérifier / corriger si besoin)."
-                if detected_site:
-                    msg += f" Site détecté : **{detected_site}**."
-                st.info(msg)
-            except Exception as e:
-                st.warning("📎 Bon importé, mais lecture automatique impossible. Saisie manuelle requise.")
-                st.code(repr(e))
-
-        pdj_table = st.data_editor(
-            base_rows,
-            use_container_width=True,
-            hide_index=True,
-            num_rows="dynamic",
-            key="pdj_order_editor",
-        )
-
-        kind = st.selectbox(
-            "Type d'enregistrement",
-            options=["commande", "manuel", "avoir_qty"],
-            index=0,
-            help="commande = bon de commande; manuel = consommation ajoutée; avoir_qty = avoir en quantités (valeurs négatives possibles)",
-            key="pdj_kind",
-        )
-        comment = st.text_input("Commentaire (optionnel)", value="", key="pdj_comment")
-
-        if st.button("➕ Enregistrer ce bon PDJ", type="primary", key="pdj_save_order"):
-            if not str(pdj_site).strip():
-                st.error("Renseigne un site pour enregistrer le bon.")
-            else:
-                df = pdj_table.copy()
-                df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0.0)
-                df = df[df["qty"] != 0].copy()
-                if df.empty:
-                    st.warning("Aucune quantité non nulle : rien à enregistrer.")
-                else:
-                    df["date"] = pdj_date
-                    df["site"] = pdj_site
-                    df["kind"] = kind
-                    df["comment"] = comment
-                    n = pdj_add_records(df, source_filename=pdj_source)
-                    st.success(f"✅ Bon enregistré : {n} ligne(s).")
-
-        st.markdown("### 2) Tarifs unitaires")
-        st.caption(
-            "Renseigne les prix unitaires par produit. Si tous les sites ont le même tarif, laisse 'site' = __default__. "
-            "Tu peux ajouter une ligne avec un site spécifique si besoin."
-        )
-        prices = pdj_load_prices()
-        prices_edit = st.data_editor(
-            prices,
-            use_container_width=True,
-            hide_index=True,
-            num_rows="dynamic",
-            key="pdj_prices_editor",
-        )
-        if st.button("💾 Enregistrer les tarifs", key="pdj_save_prices"):
-            try:
-                n = pdj_save_prices(prices_edit)
-                st.success(f"✅ Tarifs enregistrés ({n} lignes).")
-            except Exception as e:
-                st.error("Erreur lors de l'enregistrement des tarifs")
-                st.code(repr(e))
-
-        st.markdown("### 3) Ajustements monétaires (avoirs / corrections en €)")
-        st.caption("Exemples : avoir global, correction sans quantité, frais exceptionnels. Montant négatif = avoir.")
-        adj_base = pd.DataFrame(
-            {
-                "date": [today],
-                "site": [""],
-                "label": ["Avoir"],
-                "amount_eur": [0.0],
-                "comment": [""],
-            }
-        )
-        adj_edit = st.data_editor(
-            adj_base,
-            use_container_width=True,
-            hide_index=True,
-            num_rows="dynamic",
-            key="pdj_adj_editor",
-        )
-        if st.button("➕ Ajouter ces ajustements", key="pdj_add_adj"):
-            try:
-                df = adj_edit.copy()
-                df["amount_eur"] = pd.to_numeric(df["amount_eur"], errors="coerce").fillna(0.0)
-                df = df[df["amount_eur"] != 0].copy()
-                if df.empty:
-                    st.warning("Aucun montant non nul : rien à ajouter.")
-                else:
-                    n = pdj_add_money_adjustments(df)
-                    st.success(f"✅ Ajustements ajoutés : {n} ligne(s).")
-            except Exception as e:
-                st.error("Erreur lors de l'ajout des ajustements")
-                st.code(repr(e))
-
-        st.markdown("### 4) Aperçu & export mensuel")
-        synth, detail, adj = pdj_billing.compute_monthly_pdj(month)
-        cA, cB = st.columns(2)
-        with cA:
-            st.markdown("**Synthèse par site**")
-            st.dataframe(synth, use_container_width=True, hide_index=True)
-        with cB:
-            st.markdown("**Détail lignes (mois)**")
-            st.dataframe(detail, use_container_width=True, hide_index=True)
-
-        c_exp1, c_exp2 = st.columns([1, 1])
-        with c_exp1:
-            do_xlsx = st.button("📤 Exporter Facturation PDJ (Excel)", type="primary", key="pdj_export")
-        with c_exp2:
-            do_pdf = st.button("📄 Exporter factures PDF par site (ZIP)", type="primary", key="pdj_export_pdf")
-
-        if do_xlsx:
-            out_xlsx = _temp_out_path(".xlsx")
-            try:
-                pdj_export_monthly_workbook(month, out_xlsx)
-                with open(out_xlsx, "rb") as f:
-                    st.download_button(
-                        "Télécharger Facturation_PDJ.xlsx",
-                        data=f,
-                        file_name=f"Facturation_PDJ_{month}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
-            except Exception as e:
-                st.error("Erreur lors de l'export PDJ")
-                st.code(repr(e))
-
-        if do_pdf:
-            try:
-                zip_bytes = pdj_billing.export_monthly_invoices_zip(month)
-                st.download_button(
-                    "Télécharger factures PDJ (ZIP)",
-                    data=zip_bytes,
-                    file_name=f"Factures_PDJ_{month}.zip",
-                    mime="application/zip",
-                )
-            except Exception as e:
-                st.error("Erreur lors de la génération des PDF")
-                st.code(repr(e))
-
-        # ------------------------------------------------------------------
-        # Gestion des exports persistants (suppression)
-        # ------------------------------------------------------------------
-        with st.expander("📁 Exports PDJ enregistrés — suppression", expanded=False):
-            st.caption(
-                "Les exports (Excel / ZIP) générés ici sont maintenant enregistrés dans le dossier data/facturation_pdj/exports. "
-                "Tu peux les supprimer à tout moment."
-            )
-            try:
-                saved = pdj_billing.list_saved_exports(month)
-            except Exception:
-                saved = []
-
-            if not saved:
-                st.info("Aucun export enregistré pour ce mois.")
-            else:
-                options = {p.name: str(p) for p in saved}
-                sel_name = st.selectbox("Choisir un export", options=list(options.keys()), key="pdj_saved_export_sel")
-                c1, c2 = st.columns([1, 1])
-                with c1:
-                    st.code(sel_name)
-                with c2:
-                    if st.button("🗑️ Supprimer cet export", key="pdj_saved_export_del"):
-                        ok = pdj_billing.delete_saved_export(options[sel_name])
-                        if ok:
-                            st.success("✅ Export supprimé.")
-                        else:
-                            st.error("Impossible de supprimer cet export (chemin non autorisé ou fichier absent).")
-
-        with st.expander("🗑️ Suppression (PDJ) — lignes / ajustements", expanded=False):
-            st.warning(
-                "Zone sensible : tu peux supprimer des lignes enregistrées. "
-                "Les exports Excel/PDF ne suppriment rien tout seuls."
-            )
-
-            if pdj_delete_records is None:
-                st.error("La fonction de suppression PDJ n'est pas disponible dans cette version.")
-            else:
-                cDel1, cDel2 = st.columns(2)
-                with cDel1:
-                    del_site = st.text_input("Filtre site (optionnel)", value="", key="pdj_del_site")
-                    del_source = st.text_input("Filtre référence/source (optionnel)", value="", key="pdj_del_source")
-                    del_kind = st.selectbox(
-                        "Filtre type (optionnel)",
-                        options=["", "commande", "manuel", "avoir_qty"],
-                        index=0,
-                        key="pdj_del_kind",
-                    )
-                with cDel2:
-                    st.caption("Supprime toutes les lignes correspondant aux filtres pour le mois sélectionné.")
-                    if st.button("Supprimer lignes PDJ", key="pdj_delete_btn"):
-                        n = pdj_delete_records(month=month, site=del_site, source=del_source, kind=del_kind)
-                        st.success(f"✅ {n} ligne(s) PDJ supprimée(s) (mois {month}).")
-
-            if pdj_delete_money_adjustments is None:
-                st.info("Suppression des ajustements € indisponible dans cette version.")
-            else:
-                st.divider()
-                st.caption("Ajustements en euros (avoirs/corrections) : suppression par mois et filtre site.")
-                del_site2 = st.text_input("Filtre site ajustements (€) (optionnel)", value="", key="pdj_del_site2")
-                if st.button("Supprimer ajustements €", key="pdj_delete_adj_btn"):
-                    n2 = pdj_delete_money_adjustments(month=month, site=del_site2)
-                    st.success(f"✅ {n2} ajustement(s) € supprimé(s) (mois {month}).")
-
     with tab_all:
         st.subheader("Tableaux allergènes (format EXACT)")
         st.caption(
@@ -1269,34 +954,29 @@ try:
                 
 
         BASE_DIR = Path(__file__).resolve().parent
-
-        possible_dirs = [
-            BASE_DIR / "templates" / "allergen",
-            BASE_DIR.parent / "templates" / "allergen",
-            BASE_DIR / "gestion-cuisine" / "templates" / "allergen",
-        ]
-
-        template_dir = None
-        for p in possible_dirs:
-            if p.exists():
-                template_dir = p
-                break
-
-        if template_dir is None:
-            template_dir = BASE_DIR / "templates" / "allergen"
-
+        template_dir = BASE_DIR / "templates" / "allergen"
+        MASTER_ALLERGEN_PATH = BASE_DIR / "data" / "allergens" / "referentiel_allergenes_maitre.xlsx"
 
         c1, c2 = st.columns([2, 1])
         with c1:
-            st.markdown("### 0) Référentiel maître (obligatoire)")
-            master_upload = st.file_uploader(
-                "Upload le référentiel maître (.xlsx) (celui que tu fais évoluer semaine après semaine)",
-                type=["xlsx","xlsm"],
-                key="master_upload",
-            )
-            st.caption(
-                "Astuce : après avoir appris, télécharge le référentiel mis à jour et réutilise-le la semaine suivante."
-            )
+            st.markdown("### 0) Référentiel maître")
+            if MASTER_ALLERGEN_PATH.exists():
+                st.success("Référentiel maître chargé automatiquement — pas besoin de le réimporter.")
+            else:
+                st.error(f"Référentiel maître introuvable ({MASTER_ALLERGEN_PATH}).")
+
+            with st.expander("Remplacer le référentiel maître (rarement nécessaire)"):
+                master_upload = st.file_uploader(
+                    "Nouveau référentiel maître (.xlsx)",
+                    type=["xlsx", "xlsm"],
+                    key="master_upload",
+                )
+                if master_upload is not None and st.button("Enregistrer ce référentiel", key="master_replace"):
+                    MASTER_ALLERGEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    with open(MASTER_ALLERGEN_PATH, "wb") as f:
+                        f.write(master_upload.getbuffer())
+                    st.success("Référentiel maître remplacé.")
+                    st.rerun()
 
             st.markdown("### 1) Apprentissage (à partir d'un classeur allergènes rempli)")
             filled_allergen_wb = st.file_uploader(
@@ -1306,19 +986,17 @@ try:
             )
 
             if st.button("📚 Apprendre depuis ce classeur", type="primary"):
-                if not master_upload:
-                    st.error("Upload d'abord le référentiel maître (.xlsx).")
+                if not MASTER_ALLERGEN_PATH.exists():
+                    st.error("Référentiel maître introuvable.")
                 elif not filled_allergen_wb:
-                    st.error("Upload aussi un classeur allergènes rempli (.xlsx).")
+                    st.error("Upload un classeur allergènes rempli (.xlsx).")
                 else:
-                    tmp_master_in = _save_uploaded_file(master_upload, suffix=".xlsx")
                     tmp_filled = _save_uploaded_file(filled_allergen_wb, suffix=".xlsx")
-                    tmp_master_out = _temp_out_path(".xlsx")
 
-                    learn_from_filled_allergen_workbook(tmp_filled, tmp_master_in, tmp_master_out)
+                    learn_from_filled_allergen_workbook(tmp_filled, str(MASTER_ALLERGEN_PATH), str(MASTER_ALLERGEN_PATH))
 
-                    st.success("Référentiel maître mis à jour.")
-                    with open(tmp_master_out, "rb") as f:
+                    st.success("Référentiel maître mis à jour et enregistré — disponible directement la prochaine fois.")
+                    with open(MASTER_ALLERGEN_PATH, "rb") as f:
                         st.download_button(
                             "Télécharger le référentiel maître mis à jour",
                             data=f,
@@ -1339,15 +1017,14 @@ try:
         if st.button("📄 Générer tableaux allergènes (Excel)", type="primary"):
             if not (template_dir / "template_allergen.xlsx").exists():
                 st.error("Templates allergènes manquants (templates/allergen).")
-            elif not master_upload:
-                st.error("Upload d'abord le référentiel maître (colonne de gauche).")
+            elif not MASTER_ALLERGEN_PATH.exists():
+                st.error("Référentiel maître introuvable.")
             else:
-                tmp_master = _save_uploaded_file(master_upload, suffix=".xlsx")
                 out_all = _temp_out_path(".xlsx")
 
                 out_xlsx, missing = generate_allergen_workbook(
                     menu_excel_path=menu_path,
-                    allergen_ref_path=str(tmp_master),
+                    allergen_ref_path=str(MASTER_ALLERGEN_PATH),
                     out_xlsx_path=out_all,
                     template_dir=str(template_dir),
                 )
