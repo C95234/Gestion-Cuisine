@@ -104,6 +104,7 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
 
     counts = pd.DataFrame(records)
 
+    MENU_COLUMNS = ["Date", "Jour", "Repas", "Categorie", "Regime_menu", "canon_regime", "Produit"]
     menu_df = pd.DataFrame(
         [
             {
@@ -116,7 +117,8 @@ def build_bon_commande(planning: Dict[str, pd.DataFrame], menu_items: List[MenuI
                 "Produit": it.produit,
             }
             for it in menu_items
-        ]
+        ],
+        columns=MENU_COLUMNS,
     )
 
     if counts.empty or menu_df.empty:

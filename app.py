@@ -445,6 +445,11 @@ try:
     with tab_bc:
         st.subheader("Bon de commande")
         bon = build_bon_commande(planning, menu_items)
+        if bon.empty:
+            st.warning(
+                "Aucun plat n'a été détecté dans le fichier Menu (feuille 'Feuil2') : le bon de commande est vide. "
+                "Vérifie que le fichier Menu correspond bien au format attendu."
+            )
         st.caption(
             "Tu peux **fusionner/renommer des lignes** en modifiant la colonne *Libellé* "
             "(elles seront regroupées au moment des bons par fournisseur)."
